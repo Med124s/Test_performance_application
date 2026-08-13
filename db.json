@@ -1,0 +1,77 @@
+{
+  "applications": [],
+  "scenarios": [],
+  "steps": [],
+  "executions": [],
+  "servers": [],
+  "serverMetrics": [],
+  "roles": [
+    {
+      "id": "1",
+      "name": "Admin",
+      "description": "Contrôle total de la plateforme : gestion des utilisateurs, des rôles, des configurations et de la sécurité.",
+      "permissions": [
+        "applications.read",
+        "applications.create",
+        "applications.update",
+        "applications.delete",
+        "scenarios.read",
+        "scenarios.create",
+        "scenarios.update",
+        "scenarios.delete",
+        "executions.read",
+        "executions.launch",
+        "executions.stop",
+        "executions.delete",
+        "metriques.view",
+        "rapports.view",
+        "rapports.export",
+        "users.read",
+        "users.create",
+        "users.update",
+        "users.delete",
+        "roles.read",
+        "roles.create",
+        "roles.update",
+        "roles.delete"
+      ],
+      "createdAt": "2026-08-07T13:32:54.047Z",
+      "updatedAt": "2026-08-07T18:38:05.136Z"
+    },
+    {
+      "id": "2",
+      "name": "Testeur",
+      "description": "Peut créer, configurer et exécuter des scénarios de test, et consulter les rapports et métriques.",
+      "permissions": [
+        "applications.read",
+        "applications.create",
+        "applications.update",
+        "scenarios.read",
+        "scenarios.create",
+        "scenarios.update",
+        "executions.read",
+        "executions.launch",
+        "executions.stop",
+        "metriques.view",
+        "rapports.view",
+        "rapports.export"
+      ],
+      "createdAt": "2026-08-07T13:32:54.047Z",
+      "updatedAt": "2026-08-07T18:38:17.819Z"
+    },
+    {
+      "id": "3",
+      "name": "Visiteur",
+      "description": "Accès en lecture seule : consultation des tableaux de bord, scénarios, rapports et métriques, sans droit de modification.",
+      "permissions": [
+        "applications.read",
+        "scenarios.read",
+        "executions.read",
+        "metriques.view",
+        "rapports.view"
+      ],
+      "createdAt": "2026-08-07T13:32:54.047Z",
+      "updatedAt": "2026-08-07T13:32:54.047Z"
+    }
+  ]
+}
