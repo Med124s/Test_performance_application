@@ -32,17 +32,7 @@ function Executions() {
   // Flux de lancement (modale + progression réelle) partagé avec la page
   // Scénarios — voir hooks/useScenarioLauncher.
   const launcher = useScenarioLauncher(refetchExecutions)
-  const { form, openModal, openForScenario, selectScenario } = launcher
-
-  // Dès que les scénarios sont chargés, on présélectionne le premier — via
-  // selectScenario pour que VUs/Ramp-up soient aussi préremplis depuis ce
-  // scénario (source unique de cette logique, voir useScenarioLauncher).
-  useEffect(() => {
-    if (scenarios.length > 0 && !form.scenarioId) {
-      selectScenario(scenarios[0])
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scenarios])
+  const { openModal, openForScenario } = launcher
 
   // Arrivée depuis la page Scénarios / ExecutionDetail ("Relancer le test") :
   // on ouvre directement la modale de lancement, pré-remplie avec le bon
@@ -63,6 +53,7 @@ function Executions() {
       'Échouée': { cls: 'danger' },
       'En cours': { cls: 'info' },
       'Suspendue': { cls: 'neutral' },
+      'Annulée': { cls: 'neutral' },
     }
     const { cls } = map[status]
     return (

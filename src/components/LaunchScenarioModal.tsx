@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Application, Scenario } from '../types'
 import { ScenarioLauncher } from '../hooks/useScenarioLauncher'
 
@@ -23,8 +23,49 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
 
   const {
     showLaunchModal, launchStep, setLaunchStep, launching, liveSteps, launchError,
-    form, setForm, selectScenario, closeModal, handleLaunch, doneCount, errorCount, progressPct, currentRunning,
+    form, setForm, selectApplication, selectScenario, closeModal, handleLaunch, doneCount, errorCount, progressPct, currentRunning,
+    controlState, pauseExecution, resumeExecution, cancelExecution,
   } = launcher
+
+  // Scénarios de l'application choisie uniquement — l'application se
+  // choisit toujours en premier (voir selectApplication dans
+  // useScenarioLauncher), le scénario ensuite parmi cette liste filtrée.
+  const scenariosForApp = useMemo(
+    () => scenarios.filter((s) => String(s.applicationId) === String(form.applicationId)),
+    [scenarios, form.applicationId]
+  )
+
+  // Vue "un VU à la fois" pour la progression en direct — avec plusieurs
+  // VUs, une liste plate de toutes les étapes de tous les VUs devient
+  // illisible. On pagine par VU, avec un aperçu compact (pastille colorée) pour
+  // repérer en un coup d'œil lequel a une erreur sans avoir à l'ouvrir.
+  const [selectedVu, setSelectedVu] = useState(0)
+  useEffect(() => {
+    if (launchStep === 3) setSelectedVu(0)
+  }, [launchStep])
+
+  const vuNumbers = useMemo(() => {
+    const vus = new Set<number>()
+    liveSteps.forEach((s) => { if (s.vu !== undefined) vus.add(s.vu) })
+    return Array.from(vus).sort((a, b) => a - b)
+  }, [liveSteps])
+
+  const stepsForVu = (vu: number) => liveSteps.filter((s) => s.vu === vu)
+
+  const vuStatus = (vu: number): 'running' | 'error' | 'success' | 'pending' => {
+    const steps = stepsForVu(vu)
+    if (steps.some((s) => s.status === 'running')) return 'running'
+    if (steps.some((s) => s.status === 'error')) return 'error'
+    if (steps.length > 0 && steps.every((s) => s.status === 'success' || s.status === 'skipped')) return 'success'
+    return 'pending'
+  }
+
+  const vuStatusColor: Record<ReturnType<typeof vuStatus>, string> = {
+    running: 'var(--pt-primary)',
+    error: 'var(--pt-danger)',
+    success: 'var(--pt-success)',
+    pending: 'var(--pt-text-light)',
+  }
 
   if (!showLaunchModal) return null
 
@@ -70,22 +111,32 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
         {launchStep === 1 && (
           <div className="row g-3">
             <div className="col-12">
-              <label style={labelStyle}>Scénario *</label>
-              <select style={inputStyle} value={form.scenarioId} onChange={e => {
-                selectScenario(scenarios.find((s) => s.id === e.target.value))
-              }}>
-                {scenarios.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              <label style={labelStyle}>Application *</label>
+              <select style={inputStyle} value={form.applicationId} onChange={e => selectApplication(e.target.value)}>
+                <option value="" disabled>Sélectionner une application…</option>
+                {applications.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
               </select>
             </div>
-            <div className="col-6">
-              <label style={labelStyle}>Application</label>
-              <input
-                type="text"
-                style={{ ...inputStyle, background: 'var(--pt-border)', cursor: 'not-allowed' }}
-                value={appById.get(form.applicationId)?.name ?? ''}
-                disabled
-                title="Déterminée automatiquement par le scénario choisi"
-              />
+            <div className="col-12">
+              <label style={labelStyle}>Scénario *</label>
+              <select
+                style={{ ...inputStyle, ...(!form.applicationId ? { background: 'var(--pt-border)', cursor: 'not-allowed' } : {}) }}
+                value={form.scenarioId}
+                disabled={!form.applicationId}
+                onChange={e => {
+                  selectScenario(scenariosForApp.find((s) => String(s.id) === e.target.value))
+                }}
+              >
+                <option value="" disabled>
+                  {form.applicationId ? 'Sélectionner un scénario…' : "Choisissez d'abord une application"}
+                </option>
+                {scenariosForApp.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+              {form.applicationId && scenariosForApp.length === 0 && (
+                <div style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)', marginTop: '4px' }}>
+                  Aucun scénario pour cette application.
+                </div>
+              )}
             </div>
             <div className="col-6">
               <label style={labelStyle} className="d-flex align-items-center gap-2">
@@ -132,7 +183,7 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
               <button onClick={closeModal} style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)', borderRadius: 'var(--pt-radius-sm)', padding: '8px 20px', cursor: 'pointer', fontSize: '13.5px' }}>
                 Annuler
               </button>
-              <button onClick={() => setLaunchStep(2)} disabled={!form.scenarioId} className="pt-btn-primary" style={{ padding: '8px 20px' }}>
+              <button onClick={() => setLaunchStep(2)} disabled={!form.applicationId || !form.scenarioId} className="pt-btn-primary" style={{ padding: '8px 20px' }}>
                 Suivant <i className="bi bi-arrow-right ms-1"></i>
               </button>
             </div>
@@ -175,7 +226,12 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
           <div>
             <div className="d-flex align-items-center justify-content-between mb-2">
               <span style={{ fontSize: '13px', fontWeight: 600 }}>
-                Progression globale — {doneCount}/{liveSteps.length} étapes
+                Progression — {doneCount}/{liveSteps.length} étapes
+                {controlState === 'paused' && (
+                  <span className="pt-pill warning ms-2" style={{ fontSize: '10.5px' }}>
+                    <i className="bi bi-pause-fill"></i> Pausée
+                  </span>
+                )}
               </span>
               <span style={{ fontSize: '13px', fontWeight: 700, color: errorCount > 0 ? 'var(--pt-danger)' : 'var(--pt-primary)' }}>{progressPct}%</span>
             </div>
@@ -183,23 +239,98 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
               <div style={{ height: '100%', background: errorCount > 0 ? 'var(--pt-warning)' : 'var(--pt-success)', borderRadius: '4px', width: `${progressPct}%`, transition: 'width 0.3s ease' }}></div>
             </div>
 
-            {currentRunning && (
+            {launching && (
+              <div className="d-flex gap-2 mb-3">
+                {controlState === 'running' && (
+                  <button
+                    onClick={pauseExecution}
+                    style={{ background: 'var(--pt-warning)', color: 'white', border: 'none', borderRadius: 'var(--pt-radius-sm)', padding: '6px 16px', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 }}
+                  >
+                    <i className="bi bi-pause-fill me-1"></i> Pause
+                  </button>
+                )}
+                {controlState === 'paused' && (
+                  <button
+                    onClick={resumeExecution}
+                    style={{ background: 'var(--pt-success)', color: 'white', border: 'none', borderRadius: 'var(--pt-radius-sm)', padding: '6px 16px', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 }}
+                  >
+                    <i className="bi bi-play-fill me-1"></i> Reprendre
+                  </button>
+                )}
+                {controlState !== 'cancelled' && (
+                  <button
+                    onClick={cancelExecution}
+                    style={{ background: 'var(--pt-card-bg)', color: 'var(--pt-danger)', border: '1px solid var(--pt-danger)', borderRadius: 'var(--pt-radius-sm)', padding: '6px 16px', cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 }}
+                  >
+                    <i className="bi bi-stop-fill me-1"></i> Annuler
+                  </button>
+                )}
+              </div>
+            )}
+
+            {currentRunning && controlState === 'running' && (
               <p style={{ fontSize: '13px', color: 'var(--pt-text-muted)', marginBottom: '1rem' }}>
                 <i className="bi bi-arrow-repeat pt-spin me-1"></i>
                 Étape en cours : <strong>{currentRunning.step.name}</strong>
               </p>
             )}
-            {!currentRunning && doneCount === liveSteps.length && liveSteps.length > 0 && (
-              <div className={`pt-alert-banner ${errorCount > 0 ? 'warning' : 'success'} mb-3`}>
-                <i className={`bi ${errorCount > 0 ? 'bi-exclamation-triangle-fill' : 'bi-check-circle-fill'}`}></i>
-                {errorCount > 0
+            {!launching && liveSteps.length > 0 && (
+              <div className={`pt-alert-banner ${controlState === 'cancelled' ? 'warning' : errorCount > 0 ? 'warning' : 'success'} mb-3`}>
+                <i className={`bi ${controlState === 'cancelled' ? 'bi-slash-circle-fill' : errorCount > 0 ? 'bi-exclamation-triangle-fill' : 'bi-check-circle-fill'}`}></i>
+                {controlState === 'cancelled'
+                  ? 'Exécution annulée.'
+                  : errorCount > 0
                   ? `Exécution terminée avec ${errorCount} erreur${errorCount > 1 ? 's' : ''}.`
                   : 'Exécution terminée avec succès !'}
               </div>
             )}
 
-            <div className="d-flex flex-column gap-2" style={{ maxHeight: '320px', overflowY: 'auto' }}>
-              {liveSteps.map((ls, idx) => {
+            {vuNumbers.length > 1 && (
+              <div className="d-flex align-items-center gap-2 mb-2" style={{ flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '11px', color: 'var(--pt-text-muted)', fontWeight: 600, textTransform: 'uppercase' }}>VUs</span>
+                {vuNumbers.map((vu) => (
+                  <button
+                    key={vu}
+                    onClick={() => setSelectedVu(vu)}
+                    title={`Utilisateur virtuel ${vu + 1}`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: '5px',
+                      padding: '3px 9px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 600,
+                      border: `1px solid ${vu === selectedVu ? 'var(--pt-primary)' : 'var(--pt-border)'}`,
+                      background: vu === selectedVu ? 'var(--pt-primary-light)' : 'var(--pt-card-bg)',
+                      color: vu === selectedVu ? 'var(--pt-primary)' : 'var(--pt-text-muted)',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: vuStatusColor[vuStatus(vu)], flexShrink: 0 }}></span>
+                    VU {vu + 1}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="d-flex align-items-center justify-content-between mb-2">
+              <button
+                onClick={() => setSelectedVu((v) => Math.max(0, v - 1))}
+                disabled={selectedVu === 0}
+                style={{ background: 'none', border: 'none', color: selectedVu === 0 ? 'var(--pt-text-light)' : 'var(--pt-primary)', cursor: selectedVu === 0 ? 'not-allowed' : 'pointer', fontSize: '13px' }}
+              >
+                <i className="bi bi-chevron-left"></i> Précédent
+              </button>
+              <span style={{ fontSize: '12px', color: 'var(--pt-text-muted)', fontWeight: 600 }}>
+                VU {selectedVu + 1} / {vuNumbers.length || 1}
+              </span>
+              <button
+                onClick={() => setSelectedVu((v) => Math.min(vuNumbers.length - 1, v + 1))}
+                disabled={selectedVu >= vuNumbers.length - 1}
+                style={{ background: 'none', border: 'none', color: selectedVu >= vuNumbers.length - 1 ? 'var(--pt-text-light)' : 'var(--pt-primary)', cursor: selectedVu >= vuNumbers.length - 1 ? 'not-allowed' : 'pointer', fontSize: '13px' }}
+              >
+                Suivant <i className="bi bi-chevron-right"></i>
+              </button>
+            </div>
+
+            <div className="d-flex flex-column gap-2" style={{ maxHeight: '280px', overflowY: 'auto' }}>
+              {stepsForVu(selectedVu).map((ls, idx) => {
                 const meta =
                   ls.status === 'success' ? { icon: 'bi-check-circle-fill', color: 'var(--pt-success)', label: 'Réussie' } :
                   ls.status === 'error' ? { icon: 'bi-x-circle-fill', color: 'var(--pt-danger)', label: 'Échec' } :
@@ -209,9 +340,6 @@ function LaunchScenarioModal({ launcher, scenarios, applications }: LaunchScenar
                 return (
                   <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 10px', borderRadius: 'var(--pt-radius-sm)', background: 'var(--pt-bg)', border: '1px solid var(--pt-border)' }}>
                     <i className={`bi ${meta.icon}`} style={{ color: meta.color, fontSize: '15px', flexShrink: 0 }}></i>
-                    {ls.vu !== undefined && (
-                      <span className="pt-pill neutral" style={{ fontSize: '10px', flexShrink: 0 }}>VU {ls.vu + 1}</span>
-                    )}
                     <span style={{ fontSize: '13px', fontWeight: 600, flex: 1 }}>{ls.step.name}</span>
                     {ls.responseTimeMs !== undefined && (
                       <span style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)' }}>{ls.responseTimeMs} ms</span>

@@ -6,10 +6,9 @@ import { validateRequired, validateEmail, firstError } from '../utils/validation
 type ViewMode = 'login' | 'forgot' | 'sent'
 
 const features = [
-  { icon: 'bi-lightning-charge-fill', text: 'Testez vos applications Web, API REST et SOAP' },
-  { icon: 'bi-graph-up-arrow', text: 'Suivez vos métriques de performance en temps réel' },
-  { icon: 'bi-shield-check', text: 'Gestion fine des rôles Visiteur, Testeur & Admin' },
-  { icon: 'bi-file-earmark-bar-graph', text: 'Rapports détaillés exportables en PDF / Excel' },
+  { icon: 'bi-lightning-charge-fill', text: 'Web, API REST & SOAP' },
+  { icon: 'bi-graph-up-arrow', text: 'Métriques en temps réel' },
+  { icon: 'bi-file-earmark-bar-graph', text: 'Rapports exportables' },
 ]
 
 function Login() {
@@ -98,7 +97,7 @@ function Login() {
               <i className="bi bi-speedometer2"></i>
             </div>
             <div>
-              <h4>PERFTEST</h4>
+              <h4>LoadPilot</h4>
               <span>Performance Testing Platform</span>
             </div>
           </div>
@@ -121,15 +120,6 @@ function Login() {
               </li>
             ))}
           </ul>
-
-          <div className="pt-auth-quote">
-            <i className="bi bi-quote"></i>
-            <p>
-              « Le point de saturation de notre API est détecté automatiquement — un gain de
-              temps énorme pour notre équipe QA. »
-            </p>
-            <span>— Équipe Performance Engineering</span>
-          </div>
         </div>
       </div>
 
@@ -140,7 +130,7 @@ function Login() {
             <>
               <div className="pt-auth-form-header">
                 <h2>Connexion</h2>
-                <p>Accédez à votre espace PERFTEST</p>
+                <p>Accédez à votre espace LoadPilot</p>
               </div>
 
               {error && (
@@ -256,7 +246,7 @@ function Login() {
               </div>
 
               <p className="pt-auth-footer-text">
-                PERFTEST v1.0.0 — Environnement de démonstration (frontend seul, sans backend)
+                LoadPilot v1.0.0 — Environnement de démonstration (frontend seul, sans backend)
               </p>
             </>
           )}

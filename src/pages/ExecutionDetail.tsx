@@ -22,7 +22,7 @@ import { useAuth } from '../context/AuthContext'
 import { applicationsApi } from '../services/api/applications'
 import { stepsApi } from '../services/api/steps'
 import { setExecutionPrefill } from '../utils/executionBridge'
-import { computePerformanceMetrics, durationToSeconds } from '../utils/metrics'
+import { computeMetricsByStep, computePerformanceMetrics, durationToSeconds } from '../utils/metrics'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, BarElement, ArcElement, Title, Tooltip, Legend, Filler)
 
@@ -41,6 +41,13 @@ function ExecutionDetail() {
   const navigate = useNavigate()
   const { canEdit } = useAuth()
   const [activeTab, setActiveTab] = useState('Vue ensemble')
+  // Vue "un VU à la fois" pour la chronologie/résultat/logs — avec
+  // plusieurs VUs, la même étape (ex. "login") revient une fois par VU dans
+  // une liste plate, vite illisible au-delà de quelques VUs (voir
+  // LaunchScenarioModal, même problème déjà résolu pour l'exécution en
+  // direct). Les métriques agrégées (KPIs, Métriques par étape, graphiques)
+  // restent, elles, toujours calculées sur TOUS les VUs.
+  const [selectedVu, setSelectedVu] = useState<number | 'all'>('all')
 
   const [execution, setExecution] = useState<Execution | null>(null)
   const [scenario, setScenario] = useState<Scenario | null>(null)
@@ -76,6 +83,17 @@ function ExecutionDetail() {
     return () => { cancelled = true }
   }, [id])
 
+  // Dès qu'une exécution multi-VUs est chargée, on démarre sur le VU 1
+  // plutôt que "Tous" — c'est justement le mode "tous les VUs mélangés"
+  // qui rend la chronologie illisible avec plusieurs utilisateurs virtuels.
+  // Une seule exécution (mono-VU) reste sur "Tous" (revient au même).
+  useEffect(() => {
+    if (!execution) return
+    const vus = new Set<number>()
+    execution.stepResults.forEach((r) => { if (r.vu !== undefined) vus.add(r.vu) })
+    setSelectedVu(vus.size > 1 ? Math.min(...vus) : 'all')
+  }, [execution])
+
   const statusBadge = (() => {
     switch (execution?.status) {
       case 'Réussie': return { cls: 'success', icon: 'bi-check-circle-fill', text: 'Terminée avec succès' }
@@ -83,6 +101,7 @@ function ExecutionDetail() {
       case 'Échouée': return { cls: 'danger', icon: 'bi-x-circle-fill', text: 'Échouée' }
       case 'En cours': return { cls: 'info', icon: 'bi-play-circle-fill', text: 'En cours' }
       case 'Suspendue': return { cls: 'neutral', icon: 'bi-pause-circle-fill', text: 'Suspendue' }
+      case 'Annulée': return { cls: 'neutral', icon: 'bi-slash-circle-fill', text: 'Annulée' }
       default: return { cls: 'neutral', icon: 'bi-question-circle-fill', text: 'Statut inconnu' }
     }
   })()
@@ -96,18 +115,35 @@ function ExecutionDetail() {
   }
 
   const stepResults = execution?.stepResults ?? []
+
+  // VUs réellement présents dans cette exécution, pour le sélecteur —
+  // seules la chronologie, le tableau "Résultat de chaque étape" et les
+  // logs sont filtrés par VU ; les KPIs/Métriques par étape/graphiques
+  // restent toujours calculés sur l'ensemble des VUs.
+  const vuNumbers = Array.from(new Set(stepResults.filter((r) => r.vu !== undefined).map((r) => r.vu!))).sort((a, b) => a - b)
+  const vuFilteredResults = selectedVu === 'all' ? stepResults : stepResults.filter((r) => r.vu === selectedVu)
+  const vuStatusFor = (vu: number): 'error' | 'success' => {
+    const forVu = stepResults.filter((r) => r.vu === vu)
+    return forVu.some((r) => r.status === 'error') ? 'error' : 'success'
+  }
+
   // Étapes réellement envoyées — exclut les 'skipped' (Étape active
   // décochée) des graphiques de temps de réponse, où un 0ms serait trompeur
   // (laisserait croire à une requête ultra-rapide plutôt qu'à une absence
   // de requête).
   const sentStepResults = stepResults.filter((r) => r.status !== 'skipped')
-  const stepById = new Map(steps.map((s) => [s.id, s]))
-  const perf = computePerformanceMetrics(stepResults, execution ? durationToSeconds(execution.duration) : 0)
+  const stepById = new Map(steps.map((s) => [String(s.id), s]))
+  const totalDurationSec = execution ? durationToSeconds(execution.duration) : 0
+  const perf = computePerformanceMetrics(stepResults, totalDurationSec)
   const totalReq = perf.totalRequests
   const successCount = perf.successCount
   const errorCount = perf.errorCount
   const successRate = perf.successRate
   const avgResponseTime = perf.avgResponseTime
+
+  // Métriques calculées séparément pour CHAQUE étape (jamais les métriques
+  // globales du scénario recopiées) — voir computeMetricsByStep.
+  const stepMetrics = computeMetricsByStep(sentStepResults, totalDurationSec)
 
   const kpis = [
     { label: 'Durée totale', value: execution?.duration ?? '—', icon: 'bi-clock-history', color: 'blue' },
@@ -118,20 +154,19 @@ function ExecutionDetail() {
     { label: 'Moyenne', value: `${avgResponseTime} ms`, icon: 'bi-lightning-charge', color: 'orange' },
     { label: 'Min', value: `${perf.minResponseTime} ms`, icon: 'bi-arrow-down-circle', color: 'green' },
     { label: 'Max', value: `${perf.maxResponseTime} ms`, icon: 'bi-arrow-up-circle', color: 'red' },
-    { label: 'P95', value: `${perf.p95ResponseTime} ms`, icon: 'bi-graph-up-arrow', color: 'purple' },
     { label: 'Débit', value: `${perf.throughput.toFixed(2)} req/s`, icon: 'bi-speedometer2', color: 'blue' },
   ]
 
   // Line Chart : temps de réponse RÉEL, étape par étape (dans l'ordre
   // d'exécution) — remplace toute télémétrie CPU/RAM fictive.
   const lineChartData = {
-    labels: sentStepResults.map((r) => stepById.get(r.stepId)?.name ?? r.stepId),
+    labels: sentStepResults.map((r) => stepById.get(String(r.stepId))?.name ?? r.stepId),
     datasets: [
       {
         label: 'Temps de réponse (ms)',
         data: sentStepResults.map((r) => r.responseTimeMs ?? 0),
-        borderColor: '#2563EB',
-        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+        borderColor: '#4F46E5',
+        backgroundColor: 'rgba(79, 70, 229, 0.1)',
         fill: true,
         tension: 0.3,
       },
@@ -171,7 +206,7 @@ function ExecutionDetail() {
     datasets: [{
       label: 'Nombre de requêtes',
       data: buckets.map((b) => sentStepResults.filter((r) => (r.responseTimeMs ?? 0) >= b.min && (r.responseTimeMs ?? 0) < b.max).length),
-      backgroundColor: '#2563EB',
+      backgroundColor: '#4F46E5',
       borderRadius: 6,
     }],
   }
@@ -181,12 +216,15 @@ function ExecutionDetail() {
     scales: { x: { grid: { display: false } }, y: { grid: { color: 'rgba(0,0,0,0.05)' }, ticks: { precision: 0 } } },
   }
 
-  // Chronologie & logs : construits à partir des vrais résultats d'étapes.
-  const vuLabel = (r: StepResult) => (r.vu !== undefined ? ` [VU ${r.vu + 1}]` : '')
-  const timelineEvents = stepResults.map((r, i) => {
-    const step = stepById.get(r.stepId)
+  // Chronologie & logs : construits à partir des vrais résultats d'étapes,
+  // filtrés au VU sélectionné (voir vuFilteredResults). Chaque VU ne rejoue
+  // le scénario qu'une seule fois (voir useScenarioLauncher) — le tag [VU N]
+  // en mode "Tous" suffit donc à identifier chaque ligne sans ambiguïté.
+  const vuLabel = (r: StepResult) => (selectedVu === 'all' && r.vu !== undefined ? ` [VU ${r.vu + 1}]` : '')
+  const timelineEvents = vuFilteredResults.map((r) => {
+    const step = stepById.get(String(r.stepId))
     return {
-      title: `Étape ${i + 1} — ${step?.name ?? r.stepId}${vuLabel(r)}`,
+      title: `${step?.name ?? r.stepId}${vuLabel(r)}`,
       desc: r.status === 'success'
         ? `${r.request?.method} ${r.request?.url} → ${r.httpStatus} (${r.responseTimeMs} ms)`
         : r.status === 'skipped'
@@ -196,8 +234,8 @@ function ExecutionDetail() {
     }
   })
 
-  const recentLogs = stepResults.map((r, i) => {
-    const step = stepById.get(r.stepId)
+  const recentLogs = vuFilteredResults.map((r, i) => {
+    const step = stepById.get(String(r.stepId))
     return {
       time: `#${i + 1}`,
       level: r.status === 'success' ? 'INFO' : r.status === 'skipped' ? 'SKIP' : 'ERROR',
@@ -291,86 +329,6 @@ function ExecutionDetail() {
         ))}
       </div>
 
-      {/* Server Snapshot — état du serveur au moment de l'exécution,
-          volontairement séparé des métriques de performance ci-dessus.
-          Tant qu'aucun backend (Spring Boot + JMeter) n'est branché, seule
-          la relation avec le serveur est connue ; les valeurs restent en
-          attente plutôt que d'être inventées (voir services/api/serverSnapshot.ts). */}
-      <div className="d-flex align-items-center gap-2 mb-2" style={{ fontSize: '11.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--pt-text-muted)' }}>
-        <i className="bi bi-hdd-rack" style={{ color: 'var(--pt-primary)' }}></i> SERVER MONITORING
-      </div>
-      <div className="pt-card mb-4">
-        {!execution.serverSnapshot ? (
-          <p className="text-muted mb-0" style={{ fontSize: '13px' }}>
-            <i className="bi bi-info-circle me-1"></i>
-            Aucun serveur associé à {application?.name ?? 'cette application'}. Associez-en un depuis la page Métriques pour préparer le suivi.
-          </p>
-        ) : (
-          <>
-            <div className="row g-3 mb-3">
-              <div className="col-6 col-md-4">
-                <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Server Name</div>
-                <div style={{ fontSize: '14px', fontWeight: 600 }}>
-                  <i className="bi bi-hdd-network me-1 text-primary"></i>
-                  {execution.serverSnapshot.serverName ?? execution.serverSnapshot.serverId}
-                </div>
-              </div>
-              <div className="col-6 col-md-4">
-                <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Application</div>
-                <div style={{ fontSize: '14px', fontWeight: 600 }}>{execution.serverSnapshot.applicationName ?? '—'}</div>
-              </div>
-              <div className="col-6 col-md-4">
-                <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Captured At</div>
-                <div style={{ fontSize: '13px', fontWeight: 500 }}>
-                  {execution.serverSnapshot.capturedAt ? new Date(execution.serverSnapshot.capturedAt).toLocaleString('fr-FR') : '—'}
-                </div>
-              </div>
-            </div>
-            {execution.serverSnapshot.cpu === null ? (
-              <p className="text-muted mb-0" style={{ fontSize: '13px' }}>
-                <i className="bi bi-hourglass-split me-1"></i>
-                En attente des métriques du backend (Spring Boot + JMeter) — l'architecture est prête, les valeurs arriveront automatiquement une fois le backend branché.
-              </p>
-            ) : (
-              <div className="row g-3">
-                <div className="col-6 col-md-3">
-                  <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>CPU</div>
-                  <div style={{ fontSize: '18px', fontWeight: 700 }}>{execution.serverSnapshot.cpu}%</div>
-                </div>
-                <div className="col-6 col-md-3">
-                  <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>RAM</div>
-                  <div style={{ fontSize: '18px', fontWeight: 700 }}>{execution.serverSnapshot.ram}%</div>
-                </div>
-                <div className="col-6 col-md-3">
-                  <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Disk</div>
-                  <div style={{ fontSize: '18px', fontWeight: 700 }}>{execution.serverSnapshot.disk}%</div>
-                </div>
-                <div className="col-6 col-md-3">
-                  <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Network</div>
-                  <div style={{ fontSize: '18px', fontWeight: 700 }}>{execution.serverSnapshot.network} Mbps</div>
-                </div>
-                <div className="col-6 col-md-3">
-                  <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>Health</div>
-                  <span className={`pt-pill ${execution.serverSnapshot.health === 'Sain' ? 'success' : execution.serverSnapshot.health === 'Dégradé' ? 'warning' : 'danger'}`}>
-                    {execution.serverSnapshot.health}
-                  </span>
-                </div>
-                {execution.serverSnapshot.source && (
-                  <div className="col-12">
-                    <span className={`pt-pill ${execution.serverSnapshot.simulated ? 'neutral' : 'info'}`}>
-                      <i className={`bi ${execution.serverSnapshot.simulated ? 'bi-info-circle' : 'bi-broadcast'} me-1`}></i>
-                      {execution.serverSnapshot.simulated
-                        ? execution.serverSnapshot.source
-                        : `Métriques réelles — source : ${execution.serverSnapshot.source}`}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
       <div className="row g-3 mb-4">
         <div className="col-12 col-lg-6">
           <div className="pt-card h-100">
@@ -427,6 +385,44 @@ function ExecutionDetail() {
         </div>
       </div>
 
+      {vuNumbers.length > 1 && (
+        <div className="pt-card mb-3 py-2 px-3">
+          <div className="d-flex align-items-center gap-2 flex-wrap">
+            <span style={{ fontSize: '11px', color: 'var(--pt-text-muted)', fontWeight: 700, textTransform: 'uppercase' }}>
+              Chronologie / Résultats / Logs — filtrer par VU
+            </span>
+            <button
+              onClick={() => setSelectedVu('all')}
+              style={{
+                padding: '3px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 600, cursor: 'pointer',
+                border: `1px solid ${selectedVu === 'all' ? 'var(--pt-primary)' : 'var(--pt-border)'}`,
+                background: selectedVu === 'all' ? 'var(--pt-primary-light)' : 'var(--pt-card-bg)',
+                color: selectedVu === 'all' ? 'var(--pt-primary)' : 'var(--pt-text-muted)',
+              }}
+            >
+              Tous
+            </button>
+            {vuNumbers.map((vu) => (
+              <button
+                key={vu}
+                onClick={() => setSelectedVu(vu)}
+                title={`Utilisateur virtuel ${vu + 1}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  padding: '3px 10px', borderRadius: '20px', fontSize: '11.5px', fontWeight: 600, cursor: 'pointer',
+                  border: `1px solid ${vu === selectedVu ? 'var(--pt-primary)' : 'var(--pt-border)'}`,
+                  background: vu === selectedVu ? 'var(--pt-primary-light)' : 'var(--pt-card-bg)',
+                  color: vu === selectedVu ? 'var(--pt-primary)' : 'var(--pt-text-muted)',
+                }}
+              >
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: vuStatusFor(vu) === 'error' ? 'var(--pt-danger)' : 'var(--pt-success)', flexShrink: 0 }}></span>
+                VU {vu + 1}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="pt-card mb-4">
         <div className="pt-card-title mb-3">
           <i className="bi bi-hourglass-split me-2 text-primary"></i>
@@ -435,21 +431,72 @@ function ExecutionDetail() {
         {timelineEvents.length === 0 ? (
           <p className="text-muted mb-0" style={{ fontSize: '13px' }}>Aucune étape exécutée pour le moment.</p>
         ) : (
-        <div className="row g-3">
-          {timelineEvents.map((evt, idx) => (
-            <div className="col-12 col-md-6 col-lg-4" key={idx}>
-              <div className="p-3 rounded border" style={{ background: 'var(--pt-bg)', borderColor: 'var(--pt-border)' }}>
-                <div className="d-flex align-items-center justify-content-between mb-1">
-                  <span className={`badge ${evt.type === 'success' ? 'bg-success-subtle text-success' : evt.type === 'skipped' ? 'bg-secondary-subtle text-secondary' : 'bg-warning-subtle text-warning'}`} style={{ fontSize: '10.5px' }}>
-                    {evt.type.toUpperCase()}
+          <div style={{ position: 'relative', paddingLeft: '26px' }}>
+            <div style={{ position: 'absolute', left: '8px', top: '6px', bottom: '6px', width: '2px', background: 'var(--pt-border)' }}></div>
+            {timelineEvents.map((evt, idx) => {
+              const dotColor = evt.type === 'success' ? 'var(--pt-success)' : evt.type === 'skipped' ? 'var(--pt-text-light)' : 'var(--pt-warning)'
+              const dotIcon = evt.type === 'success' ? 'bi-check' : evt.type === 'skipped' ? 'bi-dash' : 'bi-exclamation'
+              return (
+                <div key={idx} className="d-flex align-items-baseline flex-wrap" style={{ position: 'relative', gap: '6px 10px', padding: '5px 0' }}>
+                  <span style={{
+                    position: 'absolute', left: '-26px', top: '6px', width: '17px', height: '17px', borderRadius: '50%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: dotColor, color: 'white', fontSize: '10px', flexShrink: 0,
+                  }}>
+                    <i className={`bi ${dotIcon}`}></i>
                   </span>
+                  <span className="fw-semibold" style={{ fontSize: '12.5px' }}>{evt.title}</span>
+                  <span className="text-muted font-monospace" style={{ fontSize: '11px', wordBreak: 'break-word' }}>{evt.desc}</span>
                 </div>
-                <div className="fw-semibold text-dark mb-1" style={{ fontSize: '13.5px' }}>{evt.title}</div>
-                <div className="text-muted font-monospace" style={{ fontSize: '11.5px', wordBreak: 'break-word' }}>{evt.desc}</div>
-              </div>
-            </div>
-          ))}
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Métriques par étape — chaque étape a ses propres métriques réelles
+          (calculées uniquement sur ses propres résultats), jamais les
+          métriques globales du scénario recopiées pour chaque ligne. */}
+      <div className="pt-card mb-4">
+        <div className="pt-card-title mb-3">
+          <i className="bi bi-list-ol me-2 text-primary"></i>
+          Métriques par étape
         </div>
+        {stepMetrics.length === 0 ? (
+          <p className="text-muted mb-0" style={{ fontSize: '13px' }}>Aucune requête envoyée pour le moment.</p>
+        ) : (
+          <div className="pt-table-wrapper">
+            <table className="pt-table">
+              <thead>
+                <tr>
+                  <th>Étape</th>
+                  <th>Requêtes</th>
+                  <th>Taux réussite</th>
+                  <th>Moyenne</th>
+                  <th>Débit</th>
+                  <th>CPU moyen</th>
+                  <th>RAM moyenne</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stepMetrics.map(({ stepId, metrics: m, avgCpu, avgRam }) => (
+                  <tr key={stepId}>
+                    <td className="fw-semibold">{stepById.get(stepId)?.name ?? stepId}</td>
+                    <td>{m.totalRequests}</td>
+                    <td>
+                      <span className={`pt-pill ${m.successRate === 100 ? 'success' : m.successRate > 0 ? 'warning' : 'danger'}`}>
+                        {m.successRate.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td>{m.avgResponseTime} ms</td>
+                    <td>{m.throughput.toFixed(2)} req/s</td>
+                    <td>{avgCpu != null ? `${avgCpu}%` : '—'}</td>
+                    <td>{avgRam != null ? `${avgRam}%` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
@@ -517,16 +564,16 @@ function ExecutionDetail() {
                     </tr>
                   </thead>
                   <tbody>
-                    {stepResults.length === 0 ? (
+                    {vuFilteredResults.length === 0 ? (
                       <tr><td colSpan={5} className="text-center text-muted py-3">Aucun résultat pour cette exécution.</td></tr>
-                    ) : stepResults.map((r, i) => {
-                      const step = stepById.get(r.stepId)
+                    ) : vuFilteredResults.map((r, i) => {
+                      const step = stepById.get(String(r.stepId))
                       if (r.status === 'skipped') {
                         return (
                           <tr key={i} style={{ opacity: 0.65 }}>
                             <td>
                               <span className="font-monospace fw-medium" style={{ fontSize: '13px' }}>{step?.name ?? r.stepId}</span>
-                              {r.vu !== undefined && <span className="pt-pill neutral ms-2" style={{ fontSize: '10px' }}>VU {r.vu + 1}</span>}
+                              {selectedVu === 'all' && r.vu !== undefined && <span className="pt-pill neutral ms-2" style={{ fontSize: '10px' }}>VU {r.vu + 1}</span>}
                               <div className="text-muted" style={{ fontSize: '11px' }}>Étape inactive — aucune requête envoyée</div>
                             </td>
                             <td>—</td>
@@ -543,7 +590,7 @@ function ExecutionDetail() {
                               {r.request?.method}
                             </span>
                             <span className="font-monospace fw-medium" style={{ fontSize: '13px' }}>{r.request?.url}</span>
-                            {r.vu !== undefined && <span className="pt-pill neutral ms-2" style={{ fontSize: '10px' }}>VU {r.vu + 1}</span>}
+                            {selectedVu === 'all' && r.vu !== undefined && <span className="pt-pill neutral ms-2" style={{ fontSize: '10px' }}>VU {r.vu + 1}</span>}
                             <div className="text-muted" style={{ fontSize: '11px' }}>{step?.name}</div>
                           </td>
                           <td className={r.status === 'error' ? 'fw-bold text-danger' : 'fw-bold'}>{r.responseTimeMs} ms</td>

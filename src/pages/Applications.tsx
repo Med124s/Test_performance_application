@@ -9,6 +9,7 @@ import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
 import { firstError, validateRequired, validateMaxLength, validateAbsoluteUrl, NAME_MAX_LENGTH } from '../utils/validation'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 
 const emptyForm = {
   name: '',
@@ -20,18 +21,18 @@ const emptyForm = {
   authPassword: '',
   authClientId: '',
   authClientSecret: '',
+  monitoringUrl: '',
 }
 
 const statusPillStyle: Record<ApplicationConnectionStatus, { bg: string; color: string; icon: string }> = {
   'Connectée': { bg: 'var(--pt-success-light)', color: 'var(--pt-success)', icon: 'bi-wifi' },
-  'Échouée': { bg: 'var(--pt-danger-light)', color: 'var(--pt-danger)', icon: 'bi-x-circle-fill' },
-  'Erreur': { bg: 'var(--pt-warning-light)', color: 'var(--pt-warning)', icon: 'bi-exclamation-triangle-fill' },
-  'Déconnectée': { bg: '#F3F4F6', color: 'var(--pt-text-muted)', icon: 'bi-wifi-off' },
+  'Non connectée': { bg: 'var(--pt-danger-light)', color: 'var(--pt-danger)', icon: 'bi-wifi-off' },
 }
 
 function Applications() {
   const navigate = useNavigate()
   const { canEdit } = useAuth()
+  const { showToast } = useToast()
 
   // Données réelles depuis JSON Server (services/api) — plus aucune donnée
   // statique/codée en dur. Chaque liste expose loading/error/refetch.
@@ -111,6 +112,7 @@ function Applications() {
       authPassword: app.authPassword || '',
       authClientId: app.authClientId || '',
       authClientSecret: app.authClientSecret || '',
+      monitoringUrl: app.monitoringUrl || '',
     })
     setTestStatus('idle')
     setActionError(null)
@@ -151,6 +153,7 @@ function Applications() {
       if (editingApp) {
         // PATCH réel sur JSON Server
         await applicationsApi.update(editingApp.id, form)
+        showToast(`Application « ${form.name} » modifiée avec succès.`, 'success')
       } else {
         const icons: Record<string, string> = { 'Web': 'bi-globe2', 'API REST': 'bi-code-slash', 'SOAP': 'bi-braces', 'Mobile': 'bi-phone' }
         const colors: Record<string, Application['color']> = { 'Web': 'blue', 'API REST': 'green', 'SOAP': 'orange', 'Mobile': 'purple' }
@@ -162,12 +165,15 @@ function Applications() {
           color: colors[form.type] || 'blue',
           createdAt: new Date().toISOString(),
         })
+        showToast(`Application « ${form.name} » ajoutée avec succès.`, 'success')
       }
       await refetchApps()
       setShowModal(false)
       setTestStatus('idle')
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Erreur lors de l\'enregistrement')
+      const message = err instanceof Error ? err.message : 'Erreur lors de l\'enregistrement'
+      setActionError(message)
+      showToast(message, 'danger')
     } finally {
       setSaving(false)
     }
@@ -206,14 +212,18 @@ function Applications() {
 
   const handleDelete = async (id: string) => {
     if (!canEdit) return
+    const appName = apps.find((a) => String(a.id) === String(id))?.name ?? ''
     setSaving(true)
     try {
       // DELETE réel sur JSON Server
       await applicationsApi.remove(id)
       await refetchApps()
       setDeleteConfirm(null)
+      showToast(`Application « ${appName} » supprimée avec succès.`, 'success')
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Erreur lors de la suppression')
+      const message = err instanceof Error ? err.message : 'Erreur lors de la suppression'
+      setActionError(message)
+      showToast(message, 'danger')
     } finally {
       setSaving(false)
     }
@@ -439,7 +449,15 @@ function Applications() {
                 </div>
                 <div className="col-6">
                   <div style={{ fontSize: '12px', color: 'var(--pt-text-muted)' }}>Statut</div>
-                  <span className={`pt-pill ${editingApp.status === 'Actif' ? 'success' : 'neutral'}`}>{editingApp.status}</span>
+                  {(() => {
+                    const connStatus = deriveConnectionStatus(editingApp, latestExecutionByApp.get(editingApp.id) ?? null)
+                    const pill = statusPillStyle[connStatus]
+                    return (
+                      <span className="pt-pill" style={{ background: pill.bg, color: pill.color, fontSize: '11.5px' }}>
+                        <i className={`bi ${pill.icon}`} style={{ fontSize: '10px' }}></i> {connStatus}
+                      </span>
+                    )
+                  })()}
                 </div>
                 <div className="col-6">
                   <div style={{ fontSize: '12px', color: 'var(--pt-text-muted)' }}>Méthode d'authentification</div>
@@ -549,6 +567,22 @@ function Applications() {
                   </div>
                 </>
               )}
+
+              <div className="col-12">
+                <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--pt-text)', marginBottom: '6px', display: 'block' }}>
+                  URL de monitoring <span style={{ color: 'var(--pt-text-muted)', fontWeight: 400 }}>optionnel</span>
+                </label>
+                <input
+                  className="pt-form-control"
+                  style={{ width: '100%' }}
+                  placeholder="ex: http://localhost:5000/server-metrics"
+                  value={form.monitoringUrl}
+                  onChange={e => setForm(p => ({ ...p, monitoringUrl: e.target.value }))}
+                />
+                <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)', marginTop: '4px' }}>
+                  Adresse d'un service qui rapporte le vrai CPU/RAM du serveur hébergeant cette application (ex. Local Test Server) — différente de l'URL de l'application ci-dessus. Sans elle, pas de CPU/RAM par étape dans Détail exécution.
+                </div>
+              </div>
             </fieldset>
             )}
 
@@ -606,7 +640,7 @@ function Applications() {
             </div>
             <h5 style={{ fontWeight: 700, marginBottom: '8px' }}>Supprimer l'application ?</h5>
             <p style={{ color: 'var(--pt-text-muted)', fontSize: '14px', marginBottom: '1.5rem' }}>
-              {apps.find(a => a.id === deleteConfirm)?.name} sera définitivement supprimée.
+              {apps.find(a => String(a.id) === String(deleteConfirm))?.name} sera définitivement supprimée.
             </p>
             <div className="d-flex gap-2 justify-content-center">
               <button onClick={() => setDeleteConfirm(null)} disabled={saving} style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)', borderRadius: 'var(--pt-radius-sm)', padding: '8px 20px', cursor: 'pointer', fontSize: '13.5px', color: 'var(--pt-text)' }}>

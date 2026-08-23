@@ -10,9 +10,9 @@ export interface ExecutionStatusBreakdown {
 
 export interface RecentExecution {
   name: string
-  status: 'Réussi' | 'Échoué' | 'En cours'
+  status: 'Réussi' | 'Échoué' | 'En cours' | 'Annulée'
   time: string
-  color: 'success' | 'danger' | 'info'
+  color: 'success' | 'danger' | 'info' | 'neutral'
   icon: string
 }
 
@@ -36,14 +36,13 @@ export interface DashboardStats {
   topScenarios: TopScenario[]
 }
 
-export type StatsPhase = 'before' | 'after'
-
 const statusMeta: Record<ApiExecution['status'], { status: RecentExecution['status']; color: RecentExecution['color']; icon: string }> = {
   'Réussie': { status: 'Réussi', color: 'success', icon: 'bi-check-circle-fill' },
   'Échouée': { status: 'Échoué', color: 'danger', icon: 'bi-x-circle-fill' },
   'Avec erreurs': { status: 'Échoué', color: 'danger', icon: 'bi-x-circle-fill' },
   'En cours': { status: 'En cours', color: 'info', icon: 'bi-play-circle-fill' },
   'Suspendue': { status: 'En cours', color: 'info', icon: 'bi-pause-circle-fill' },
+  'Annulée': { status: 'Annulée', color: 'neutral', icon: 'bi-slash-circle-fill' },
 }
 
 /** Moyenne réelle des temps de réponse des 7 derniers jours calendaires,
@@ -103,7 +102,7 @@ function computeStatsFromExecutions(executions: ApiExecution[], scenarios: Scena
   executions.forEach((e) => execCountByScenario.set(e.scenarioId, (execCountByScenario.get(e.scenarioId) ?? 0) + 1))
   const topScenarios: TopScenario[] = Array.from(execCountByScenario.entries())
     .map(([scenarioId, count]) => ({
-      name: scenarios.find((s) => s.id === scenarioId)?.name ?? scenarioId,
+      name: scenarios.find((s) => String(s.id) === String(scenarioId))?.name ?? scenarioId,
       percent: executions.length > 0 ? Math.round((count / executions.length) * 100) : 0,
     }))
     .sort((a, b) => b.percent - a.percent)
@@ -116,7 +115,7 @@ function computeStatsFromExecutions(executions: ApiExecution[], scenarios: Scena
       // Filet de sécurité : un statut inattendu/corrompu ne doit jamais faire
       // planter tout le Dashboard, seulement dégrader l'affichage de cette ligne.
       const meta = statusMeta[e.status] ?? { status: 'En cours', color: 'info', icon: 'bi-question-circle-fill' }
-      const scenarioName = scenarios.find((s) => s.id === e.scenarioId)?.name ?? e.scenarioId
+      const scenarioName = scenarios.find((s) => String(s.id) === String(e.scenarioId))?.name ?? e.scenarioId
       const time = new Date(e.startedAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
       return { name: scenarioName, status: meta.status, color: meta.color, icon: meta.icon, time }
     })
@@ -137,57 +136,34 @@ function computeStatsFromExecutions(executions: ApiExecution[], scenarios: Scena
   }
 }
 
-/** Découpe chronologique honnête d'un historique d'exécutions en
- * "plus ancienne moitié" (utilisée comme référence "Avant" dans le mode
- * comparaison). Avec moins de 2 exécutions, il n'y a pas assez d'historique
- * pour comparer : "Avant" = "Après" (delta 0), plutôt que d'inventer un
- * écart. */
-function olderHalf(executions: ApiExecution[]): ApiExecution[] {
-  const sorted = [...executions].sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1))
-  if (sorted.length < 2) return sorted
-  return sorted.slice(0, Math.ceil(sorted.length / 2))
-}
-
 /**
- * Snapshot de statistiques pour une application donnée (par son vrai id) et
- * une phase donnée, calculé uniquement à partir des vraies données JSON
- * Server passées en paramètre.
- * "after" = état actuel (toutes les exécutions réelles de l'application).
- * "before" = moitié la plus ancienne de ce même historique réel.
+ * Snapshot de statistiques pour une application donnée (par son vrai id),
+ * calculé uniquement à partir des vraies données JSON Server passées en
+ * paramètre (toutes les exécutions réelles de l'application).
  */
 export function buildStats(
   seedId: string,
-  phase: StatsPhase,
   real: { applications: Application[]; scenarios: Scenario[]; executions: ApiExecution[] }
 ): DashboardStats {
-  const app = real.applications.find((a) => a.id === seedId)
-  const scenariosForApp = app ? real.scenarios.filter((s) => s.applicationId === app.id) : []
-  const executionsForApp = app ? real.executions.filter((e) => e.applicationId === app.id) : []
-  const scopedExecutions = phase === 'after' ? executionsForApp : olderHalf(executionsForApp)
-  return computeStatsFromExecutions(scopedExecutions, scenariosForApp)
+  const app = real.applications.find((a) => String(a.id) === String(seedId))
+  const scenariosForApp = app ? real.scenarios.filter((s) => String(s.applicationId) === String(app.id)) : []
+  const executionsForApp = app ? real.executions.filter((e) => String(e.applicationId) === String(app.id)) : []
+  return computeStatsFromExecutions(executionsForApp, scenariosForApp)
 }
 
 /** Vue agrégée ("Toutes les applications") : calculée directement sur la
  * totalité des vraies exécutions et scénarios de JSON Server. */
 export function buildAggregateStats(
-  phase: StatsPhase,
   real: { applications: Application[]; scenarios: Scenario[]; executions: ApiExecution[] }
 ): DashboardStats {
-  const scopedExecutions = phase === 'after' ? real.executions : olderHalf(real.executions)
-  return computeStatsFromExecutions(scopedExecutions, real.scenarios)
+  return computeStatsFromExecutions(real.executions, real.scenarios)
 }
 
 export function getStats(
   appId: string | 'all',
-  phase: StatsPhase,
   real: { applications: Application[]; scenarios: Scenario[]; executions: ApiExecution[] }
 ): DashboardStats {
-  return appId === 'all' ? buildAggregateStats(phase, real) : buildStats(appId, phase, real)
-}
-
-export function percentDelta(after: number, before: number): number {
-  if (before === 0) return 0
-  return Math.round(((after - before) / before) * 1000) / 10
+  return appId === 'all' ? buildAggregateStats(real) : buildStats(appId, real)
 }
 
 export { formatDuration }

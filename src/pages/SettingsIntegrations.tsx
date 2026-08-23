@@ -16,8 +16,8 @@ interface IntegrationsPageSettings {
 const defaultIntegrationsSettings: IntegrationsPageSettings = {
   systemPrefs: { maintenance: false, testData: true, debugMode: false, timeout: 60, maxUpload: 50, maxUsers: 10000 },
   theme: 'Clair',
-  primaryColor: '#2563EB',
-  secondaryColor: '#1E40AF',
+  primaryColor: '#4F46E5',
+  secondaryColor: '#4338CA',
   density: 'Confortable',
   orgName: 'PERFTEST Corp',
   contactEmail: 'admin@perftest.io',
@@ -101,7 +101,7 @@ function SettingsIntegrations() {
             Settings
           </h1>
           <p className="text-muted mb-0" style={{ fontSize: '13.5px' }}>
-            Personnalisez et configurez votre plateforme PERFTEST
+            Personnalisez et configurez votre plateforme LoadPilot
           </p>
         </div>
         <TopBar searchPlaceholder="Rechercher une configuration..." />
@@ -145,7 +145,7 @@ function SettingsIntegrations() {
                 <span className="badge bg-primary-subtle text-primary">3 / 5 Actives</span>
               </div>
               <p className="text-muted" style={{ fontSize: '12.5px' }}>
-                Connectez PERFTEST à vos outils de communication, gestion de tickets et monitoring.
+                Connectez LoadPilot à vos outils de communication, gestion de tickets et monitoring.
               </p>
 
               <div className="d-flex flex-column gap-3 mt-3">

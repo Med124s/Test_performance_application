@@ -160,7 +160,7 @@ function Sidebar({ darkMode, toggleDarkMode, mobileOpen, onCloseMobile }: Sideba
           </button>
           {isExpanded && (
             <div className="brand-text">
-              <h5>PERFTEST</h5>
+              <h5>LoadPilot</h5>
               <small>Performance Testing Platform</small>
             </div>
           )}
@@ -201,7 +201,7 @@ function Sidebar({ darkMode, toggleDarkMode, mobileOpen, onCloseMobile }: Sideba
               fontWeight: 600,
               fontSize: '13.5px',
               textDecoration: 'none',
-              boxShadow: '0 2px 8px rgba(37,99,235,0.35)',
+              boxShadow: '0 2px 8px rgba(79,70,229,0.35)',
               transition: 'background 0.15s',
             })}
           >

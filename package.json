@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "server": "json-server --watch db.json --port 4001",
+    "server": "node server/index.js",
     "monitor": "npm --prefix local-monitoring-server start",
     "dev:all": "concurrently -n WEB,API -c blue,green \"npm:dev\" \"npm:server\"",
     "build": "tsc && vite build",

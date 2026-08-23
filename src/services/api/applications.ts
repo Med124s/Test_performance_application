@@ -15,26 +15,24 @@ export const applicationsApi = {
 
 /**
  * Dérive le statut de connexion affiché dans la colonne "Statut" de la
- * liste des applications, à partir de la dernière exécution réelle de
- * cette application — jamais stocké en dur, toujours recalculé depuis les
- * vraies données pour rester cohérent.
+ * liste des applications, à partir de la dernière exécution réelle de cette
+ * application — jamais stocké en dur, toujours recalculé depuis les vraies
+ * données. Ne reflète QUE l'accessibilité réseau réelle de l'application
+ * cible, pas la réussite du test métier lui-même (voir StepResult.httpStatus
+ * : présent dès qu'une vraie réponse HTTP a été reçue, quel que soit son
+ * code — absent uniquement en cas d'échec réseau/CORS/timeout réel, voir
+ * stepRunner.ts). Une étape qui répond 500 ou échoue une assertion prouve
+ * quand même que l'application est bien CONNECTÉE.
  */
 export function deriveConnectionStatus(
-  app: Application,
+  _app: Application,
   latestExecution: Execution | null
 ): ApplicationConnectionStatus {
-  if (app.status === 'Inactif') return 'Déconnectée'
-  if (!latestExecution) return 'Déconnectée'
-  switch (latestExecution.status) {
-    case 'Réussie':
-    case 'En cours':
-      return 'Connectée'
-    case 'Échouée':
-      return 'Échouée'
-    case 'Avec erreurs':
-    case 'Suspendue':
-      return 'Erreur'
-    default:
-      return 'Déconnectée'
-  }
+  // Pas encore d'exécution réelle : aucune preuve d'inaccessibilité, on ne
+  // présume pas le pire.
+  if (!latestExecution) return 'Connectée'
+  const sentResults = latestExecution.stepResults.filter((r) => r.status !== 'skipped')
+  if (sentResults.length === 0) return 'Connectée'
+  const gotRealResponse = sentResults.some((r) => r.httpStatus !== undefined)
+  return gotRealResponse ? 'Connectée' : 'Non connectée'
 }

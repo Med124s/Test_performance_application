@@ -4,11 +4,12 @@ import TopBar from '../components/TopBar'
 import * as stepBridge from '../utils/scenarioStepBridge'
 import { applicationsApi } from '../services/api/applications'
 import { scenariosApi } from '../services/api/scenarios'
+import { stepsApi } from '../services/api/steps'
 import { saveScenarioWithSteps, LocalStepDraft } from '../services/scenarioSave'
 import { runStep, buildVariableMap } from '../services/stepRunner'
 import { loadDefaultTestSettings } from '../utils/defaultTestSettings'
 import { parseCsvFile } from '../utils/csv'
-import { firstError, validateRequired, validateStepUrl, validateJson } from '../utils/validation'
+import { firstError, validateRequired, validateStepUrl, validateJson, validatePositiveInteger } from '../utils/validation'
 import { useScenarioLauncher } from '../hooks/useScenarioLauncher'
 import LaunchScenarioModal from '../components/LaunchScenarioModal'
 import { Scenario, Step, StepResult } from '../types'
@@ -60,6 +61,7 @@ function CreateStep() {
   const [fieldsTouched, setFieldsTouched] = useState<{ name?: boolean; url?: boolean; body?: boolean }>({})
   const stepNameError = validateRequired(stepName, "Le nom de l'étape")
   const stepUrlError = firstError(validateRequired(url, 'La ressource'), validateStepUrl(url))
+  const timeoutError = validatePositiveInteger(timeoutMs, 'Le timeout')
 
   // Configuration states (Right column)
   const [headers, setHeaders] = useState<HeaderItem[]>([
@@ -114,6 +116,13 @@ function CreateStep() {
   // Résumé) — dès qu'il est défini, on propose Exécuter / Changer / Exécuter
   // directement au lieu de naviguer aussitôt vers la liste des scénarios.
   const [savedScenario, setSavedScenario] = useState<Scenario | null>(null)
+  // Copie figée de la liste d'étapes au moment de l'enregistrement — le
+  // Résumé doit continuer à les afficher après coup, alors que
+  // stepBridge.resetAll() (appelé juste après la sauvegarde) vide le pont
+  // sessionStorage dont ce même écran lit normalement en direct ("Étapes
+  // (0) / Aucune étape." apparaissait sinon juste après avoir enregistré,
+  // alors que le scénario était bien enregistré avec toutes ses étapes).
+  const [savedStepsSnapshot, setSavedStepsSnapshot] = useState<stepBridge.CoreStep[]>([])
   const launcher = useScenarioLauncher()
 
   // Identifiant de l'étape en cours d'édition, transmis depuis la page
@@ -127,9 +136,13 @@ function CreateStep() {
     if (editingStepId === null) return
 
     const steps = stepBridge.loadSteps()
-    const coreStep = steps?.find((s) => s.id === editingStepId)
+    // Comparaison en string des deux côtés — voir CreateScenario.tsx pour
+    // le détail : sans elle, un id numérique venant de json-server ne
+    // correspond jamais à editingStepId (toujours string), et cette page
+    // retombe silencieusement sur ses valeurs par défaut ("Login
+    // utilisateur" / "/auth/login") quelle que soit l'étape cliquée.
+    const coreStep = steps?.find((s) => String(s.id) === String(editingStepId))
     const details = stepBridge.loadStepDetails(editingStepId)
-    const isNewStep = stepBridge.isEditingStepNew()
 
     if (coreStep) {
       setMethod(coreStep.method)
@@ -147,14 +160,47 @@ function CreateStep() {
       setAssertions(details.assertions)
       setPauseBeforeMs(details.pauseBeforeMs)
       setPacingAfterMs(details.pacingAfterMs)
-    } else if (isNewStep) {
-      // Nouvelle étape sans détails encore définis : on part de valeurs
-      // neutres plutôt que du jeu de données fictif "Login utilisateur".
-      setDescription('')
-      setHeaders([])
-      setBodyJson('')
-      setAssertions([])
+      return
     }
+
+    const isRealExistingStep = !editingStepId.startsWith('tmp-')
+    if (isRealExistingStep) {
+      // Le pont sessionStorage n'a jamais ses détails avancés (headers/body/
+      // assertions/timeout...) pour une étape ouverte depuis un scénario en
+      // édition : CreateScenario ne charge QUE id/order/method/name/url dans
+      // le pont, jamais ces champs. `details` étant donc TOUJOURS `null` ici
+      // pour une étape existante, il faut aller chercher la vraie donnée
+      // sur JSON Server plutôt que de supposer "rien n'a jamais été
+      // configuré" — sans ce recours, une étape ayant réellement un body/des
+      // headers/des assertions enregistrés s'affichait vide (perte
+      // apparente de données déjà sauvegardées, jamais réellement perdues
+      // en base mais invisibles à l'écran).
+      stepsApi.getById(editingStepId).then((apiStep) => {
+        setDescription(apiStep.description ?? '')
+        setFollowRedirects(apiStep.followRedirects ?? true)
+        setActiveStep(apiStep.active ?? true)
+        setTimeoutMs(apiStep.timeoutMs ?? 3000)
+        setHeaders(apiStep.headers ?? [])
+        setBodyJson(apiStep.bodyJson ?? '')
+        setAssertions((apiStep.assertions ?? []).map((a) => ({ ...a, status: 'pending' as const })))
+        setPauseBeforeMs(apiStep.pauseBeforeMs ?? 0)
+        setPacingAfterMs(apiStep.pacingAfterMs ?? 0)
+      }).catch(() => {
+        // Étape introuvable côté API (rare) : on garde les valeurs neutres
+        // ci-dessous plutôt que de laisser le jeu de données fictif visible.
+      })
+    }
+
+    // Nouvelle étape (id "tmp-...", jamais encore enregistrée) — ou étape
+    // introuvable côté API : valeurs neutres. Les états initiaux de
+    // bodyJson/headers/assertions (jeu de données de démonstration "Login
+    // utilisateur") ne doivent JAMAIS rester affichés comme s'ils étaient
+    // déjà enregistrés pour cette étape — sinon "Suivant" sans y toucher
+    // attacherait ce body de login fictif à n'importe quelle étape.
+    setDescription('')
+    setHeaders([])
+    setBodyJson('')
+    setAssertions([])
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -183,6 +229,12 @@ function CreateStep() {
   // est trouvé — jamais de jeu de données fictif "50 VUs" imposé d'office).
   const [virtualUsers, setVirtualUsers] = useState(50)
   const [rampUpSeconds, setRampUpSeconds] = useState(30)
+  const virtualUsersError = validatePositiveInteger(virtualUsers, 'Le nombre d\'utilisateurs virtuels')
+  // Ramp-up à 0 est légitime (montée en charge instantanée) — seule une
+  // valeur négative ou non entière est invalide, contrairement à VUs/Timeout.
+  const rampUpError = Number.isInteger(rampUpSeconds) && rampUpSeconds >= 0
+    ? null
+    : 'Le ramp-up doit être un nombre entier positif ou nul.'
   const [userProfile, setUserProfile] = useState('Utilisateur standard')
   const [dataSource, setDataSource] = useState<'manual' | 'csv'>('manual')
   const [csvFileName, setCsvFileName] = useState('')
@@ -239,8 +291,6 @@ function CreateStep() {
   const [scheduledDate, setScheduledDate] = useState('')
   const [scheduledTime, setScheduledTime] = useState('09:00')
   const [recurrence, setRecurrence] = useState('Quotidien')
-  const [notifyEmail, setNotifyEmail] = useState(true)
-  const [notifyOnFailureOnly, setNotifyOnFailureOnly] = useState(false)
 
   // Initialisation unique du wizard (Configuration/Utilisateurs/
   // Planification) : reprend un brouillon local s'il existe (retour depuis
@@ -267,8 +317,6 @@ function CreateStep() {
       setScheduledDate(draft.scheduledDate)
       setScheduledTime(draft.scheduledTime)
       setRecurrence(draft.recurrence)
-      setNotifyEmail(draft.notifyEmail)
-      setNotifyOnFailureOnly(draft.notifyOnFailureOnly)
       return
     }
 
@@ -288,8 +336,6 @@ function CreateStep() {
         setScheduledDate(scenario.schedule.scheduledDate ?? '')
         setScheduledTime(scenario.schedule.scheduledTime ?? '09:00')
         setRecurrence(scenario.schedule.recurrence ?? 'Quotidien')
-        setNotifyEmail(scenario.schedule.notifyEmail ?? true)
-        setNotifyOnFailureOnly(scenario.schedule.notifyOnFailureOnly ?? false)
       }
     }).catch(() => {
       // Scénario introuvable : on garde les valeurs de départ neutres.
@@ -311,10 +357,8 @@ function CreateStep() {
       scheduledDate,
       scheduledTime,
       recurrence,
-      notifyEmail,
-      notifyOnFailureOnly,
     })
-  }, [status, virtualUsers, rampUpSeconds, userProfile, dataSource, csvFileName, testVariables, executionType, scheduledDate, scheduledTime, recurrence, notifyEmail, notifyOnFailureOnly])
+  }, [status, virtualUsers, rampUpSeconds, userProfile, dataSource, csvFileName, testVariables, executionType, scheduledDate, scheduledTime, recurrence])
 
   // Retour vers la page "Étapes" (CreateScenario) : reconstruit "?edit=<id>"
   // à partir du pont si un scénario existant est en cours de modification —
@@ -385,6 +429,10 @@ function CreateStep() {
         showNotification(bodyJsonError, 'danger')
         return
       }
+      if (timeoutError) {
+        showNotification(timeoutError, 'danger')
+        return
+      }
       persistStepToBridge()
       // Écran interne 3 (ancienne "Configuration du Scénario") supprimé —
       // cet écran (Headers/Body/Assertions) EST désormais "Configuration",
@@ -392,6 +440,16 @@ function CreateStep() {
       setCurrentStep(4)
       window.scrollTo({ top: 0, behavior: 'smooth' })
       return
+    }
+    if (currentStep === 4) {
+      if (virtualUsersError) {
+        showNotification(virtualUsersError, 'danger')
+        return
+      }
+      if (rampUpError) {
+        showNotification(rampUpError, 'danger')
+        return
+      }
     }
     if (currentStep === 5 && executionType === 'scheduled' && !scheduledDate) {
       showNotification('Veuillez renseigner une date de planification.', 'danger')
@@ -426,9 +484,12 @@ function CreateStep() {
     // double dans JSON Server (bug constaté avec des scénarios dupliqués à
     // quelques dizaines de ms d'écart).
     if (savingScenario) return
-    if (stepNameError || stepUrlError || bodyJsonError) {
+    if (stepNameError || stepUrlError || bodyJsonError || timeoutError || virtualUsersError || rampUpError) {
       setFieldsTouched({ name: true, url: true, body: true })
-      showNotification(stepNameError || stepUrlError || bodyJsonError || 'Formulaire invalide.', 'danger')
+      showNotification(
+        stepNameError || stepUrlError || bodyJsonError || timeoutError || virtualUsersError || rampUpError || 'Formulaire invalide.',
+        'danger'
+      )
       return
     }
     setSavingScenario(true)
@@ -500,11 +561,10 @@ function CreateStep() {
             scheduledDate: scheduledDate || undefined,
             scheduledTime: scheduledTime || undefined,
             recurrence: recurrence || undefined,
-            notifyEmail,
-            notifyOnFailureOnly,
           },
         })
 
+        setSavedStepsSnapshot(coreSteps)
         stepBridge.resetAll()
       } catch (err) {
         showNotification(err instanceof Error ? err.message : "Erreur lors de l'enregistrement", 'danger')
@@ -516,9 +576,8 @@ function CreateStep() {
     setSavingScenario(false)
 
     if (saved) {
-      // On reste sur cette page : l'utilisateur choisit d'exécuter (avec ou
-      // sans revoir la configuration), ou de continuer à modifier.
-      launcher.selectScenario(saved)
+      // On reste sur cette page : simple confirmation avant de retourner à
+      // la liste des scénarios (voir résumé, section "Que voulez-vous faire").
       setSavedScenario(saved)
       showNotification('Scénario enregistré avec succès !', 'success')
     } else {
@@ -527,17 +586,6 @@ function CreateStep() {
         navigate('/scenarios')
       }, 1000)
     }
-  }
-
-  const handleExecuteNow = () => {
-    if (!savedScenario) return
-    launcher.openForScenario(savedScenario)
-  }
-
-  const handleExecuteDirectly = () => {
-    if (!savedScenario) return
-    launcher.openForScenario(savedScenario)
-    launcher.handleLaunch(savedScenario)
   }
 
   // Test Step state
@@ -662,28 +710,6 @@ function CreateStep() {
     )
   }
 
-  const handleSaveStep = () => {
-    setFieldsTouched({ name: true, url: true, body: true })
-    if (stepNameError) {
-      showNotification(stepNameError, 'danger')
-      return
-    }
-    if (stepUrlError) {
-      showNotification(stepUrlError, 'danger')
-      return
-    }
-    if (bodyJsonError) {
-      showNotification(bodyJsonError, 'danger')
-      return
-    }
-
-    persistStepToBridge()
-    showNotification('Étape enregistrée avec succès !', 'success')
-    setTimeout(() => {
-      goToScenario()
-    }, 1000)
-  }
-
   return (
     <div className="pt-content">
       {/* Toast Notification */}
@@ -746,33 +772,23 @@ function CreateStep() {
         </div>
         <div className="d-flex align-items-center gap-2">
           {(currentStep === 2) && (
-            <>
-              <button
-                className="pt-btn-outline"
-                style={{ fontSize: '12.5px' }}
-                onClick={handleTestStep}
-                disabled={isTestingStep}
-              >
-                {isTestingStep ? (
-                  <>
-                    <span className="spinner-border spinner-border-sm me-1" role="status"></span>
-                    Test en cours...
-                  </>
-                ) : (
-                  <>
-                    <i className="bi bi-play-circle text-success me-1"></i> Tester cette étape
-                  </>
-                )}
-              </button>
-              <button
-                className="pt-btn-primary"
-                style={{ fontSize: '12.5px' }}
-                onClick={handleSaveStep}
-                disabled={!!stepNameError || !!stepUrlError || !!bodyJsonError}
-              >
-                <i className="bi bi-check-lg me-1"></i> Enregistrer l'étape
-              </button>
-            </>
+            <button
+              className="pt-btn-outline"
+              style={{ fontSize: '12.5px' }}
+              onClick={handleTestStep}
+              disabled={isTestingStep}
+            >
+              {isTestingStep ? (
+                <>
+                  <span className="spinner-border spinner-border-sm me-1" role="status"></span>
+                  Test en cours...
+                </>
+              ) : (
+                <>
+                  <i className="bi bi-play-circle text-success me-1"></i> Tester cette étape
+                </>
+              )}
+            </button>
           )}
           <TopBar searchPlaceholder="" />
         </div>
@@ -1007,6 +1023,7 @@ function CreateStep() {
                 <div className="d-flex align-items-center gap-2">
                   <input
                     type="number"
+                    min={1}
                     className="pt-form-control"
                     value={timeoutMs}
                     onChange={(e) => setTimeoutMs(Number(e.target.value))}
@@ -1015,6 +1032,9 @@ function CreateStep() {
                     ms
                   </span>
                 </div>
+                {timeoutError && (
+                  <div style={{ color: 'var(--pt-danger)', fontSize: '12px', marginTop: '4px' }}>{timeoutError}</div>
+                )}
               </div>
             </div>
           </div>
@@ -1493,6 +1513,9 @@ function CreateStep() {
                     value={virtualUsers}
                     onChange={(e) => setVirtualUsers(Number(e.target.value))}
                   />
+                  {virtualUsersError && (
+                    <div style={{ color: 'var(--pt-danger)', fontSize: '12px', marginTop: '4px' }}>{virtualUsersError}</div>
+                  )}
                 </div>
 
                 <div>
@@ -1509,6 +1532,9 @@ function CreateStep() {
                       secondes
                     </span>
                   </div>
+                  {rampUpError && (
+                    <div style={{ color: 'var(--pt-danger)', fontSize: '12px', marginTop: '4px' }}>{rampUpError}</div>
+                  )}
                 </div>
 
                 <div>
@@ -1707,7 +1733,7 @@ function CreateStep() {
           </div>
 
           <div className="row g-4">
-            <div className="col-12 col-lg-6">
+            <div className="col-12">
               <label className="pt-form-label">Type d'exécution *</label>
               <div className="d-flex flex-column gap-2 mb-3">
                 {[
@@ -1722,7 +1748,7 @@ function CreateStep() {
                     style={{
                       cursor: 'pointer',
                       border: `1px solid ${executionType === opt.key ? 'var(--pt-primary)' : 'var(--pt-border)'}`,
-                      background: executionType === opt.key ? 'var(--pt-primary-light, rgba(37,99,235,0.06))' : 'var(--pt-bg)',
+                      background: executionType === opt.key ? 'var(--pt-primary-light, rgba(79,70,229,0.06))' : 'var(--pt-bg)',
                     }}
                   >
                     <input type="radio" checked={executionType === opt.key} onChange={() => setExecutionType(opt.key as any)} />
@@ -1768,53 +1794,6 @@ function CreateStep() {
                 </div>
               )}
             </div>
-
-            <div className="col-12 col-lg-6">
-              <div
-                className="p-3 rounded"
-                style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)' }}
-              >
-                <h6 style={{ fontSize: '13.5px', fontWeight: 600, marginBottom: '0.75rem' }}>
-                  <i className="bi bi-bell-fill me-1" style={{ color: 'var(--pt-primary)' }}></i>
-                  Notifications
-                </h6>
-
-                <div className="d-flex align-items-center justify-content-between mb-3">
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--pt-text)' }}>
-                      Notifier par email
-                    </div>
-                    <div style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)' }}>
-                      Recevoir un email à la fin de l'exécution
-                    </div>
-                  </div>
-                  <label className="pt-toggle">
-                    <input type="checkbox" checked={notifyEmail} onChange={(e) => setNotifyEmail(e.target.checked)} />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </div>
-
-                <div className="d-flex align-items-center justify-content-between">
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--pt-text)' }}>
-                      Uniquement en cas d'échec
-                    </div>
-                    <div style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)' }}>
-                      Ne notifier que si le scénario échoue
-                    </div>
-                  </div>
-                  <label className="pt-toggle">
-                    <input
-                      type="checkbox"
-                      checked={notifyOnFailureOnly}
-                      onChange={(e) => setNotifyOnFailureOnly(e.target.checked)}
-                      disabled={!notifyEmail}
-                    />
-                    <span className="toggle-slider"></span>
-                  </label>
-                </div>
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -1832,21 +1811,27 @@ function CreateStep() {
             </h6>
           </div>
 
+          {/* Avant l'enregistrement : lecture en direct du pont (reflète les
+              derniers changements). Après : la copie figée, car le pont
+              sessionStorage est vidé juste après un enregistrement réussi. */}
+          {(() => {
+            const displaySteps = savedScenario ? savedStepsSnapshot : (stepBridge.loadSteps() ?? [])
+            return (
           <div className="row g-4">
             <div className="col-12 col-lg-6">
               <div className="d-flex justify-content-between align-items-center mb-2">
                 <h6 style={{ fontSize: '13px', fontWeight: 700, margin: 0 }}>
-                  Étapes ({(stepBridge.loadSteps() ?? []).length})
+                  Étapes ({displaySteps.length})
                 </h6>
                 <button className="pt-btn-ghost" style={{ padding: '0.2rem 0.5rem', fontSize: '11.5px' }} onClick={goToScenario}>
                   <i className="bi bi-pencil"></i> Modifier
                 </button>
               </div>
               <div className="p-3 rounded d-flex flex-column gap-2" style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)', fontSize: '12.5px' }}>
-                {(stepBridge.loadSteps() ?? []).length === 0 ? (
+                {displaySteps.length === 0 ? (
                   <span className="text-muted">Aucune étape.</span>
                 ) : (
-                  (stepBridge.loadSteps() ?? []).map((s) => (
+                  displaySteps.map((s) => (
                     <div key={s.id} className="d-flex align-items-center gap-2">
                       <span
                         style={{
@@ -1921,7 +1906,6 @@ function CreateStep() {
                 {executionType === 'recurring' && (
                   <div className="d-flex justify-content-between"><span className="text-muted">Fréquence</span><strong>{recurrence}</strong></div>
                 )}
-                <div className="d-flex justify-content-between"><span className="text-muted">Notifications email</span><strong>{notifyEmail ? 'Activées' : 'Désactivées'}</strong></div>
               </div>
 
               {savedScenario ? (
@@ -1932,25 +1916,15 @@ function CreateStep() {
                   <div className="d-flex align-items-center gap-2 mb-3">
                     <i className="bi bi-check-circle-fill" style={{ color: 'var(--pt-success)', fontSize: '18px' }}></i>
                     <div style={{ fontSize: '12.5px', color: 'var(--pt-text)' }}>
-                      Scénario enregistré. Que voulez-vous faire ?
+                      Scénario enregistré. Aller à la liste des scénarios ?
                     </div>
                   </div>
-                  <div className="d-flex flex-wrap gap-2">
-                    <button className="pt-btn-primary" style={{ fontSize: '12.5px' }} onClick={handleExecuteNow}>
-                      <i className="bi bi-play-fill me-1"></i> Exécuter
+                  <div className="d-flex gap-2">
+                    <button className="pt-btn-primary" style={{ fontSize: '12.5px' }} onClick={() => navigate('/scenarios')}>
+                      <i className="bi bi-check-lg me-1"></i> Oui
                     </button>
                     <button className="pt-btn-outline" style={{ fontSize: '12.5px' }} onClick={() => setSavedScenario(null)}>
-                      <i className="bi bi-pencil me-1"></i> Changer
-                    </button>
-                    <button className="pt-btn-outline" style={{ fontSize: '12.5px' }} onClick={handleExecuteDirectly}>
-                      <i className="bi bi-lightning-charge me-1"></i> Exécuter directement
-                    </button>
-                    <button
-                      className="pt-btn-outline"
-                      style={{ fontSize: '12.5px', marginLeft: 'auto' }}
-                      onClick={() => navigate('/scenarios')}
-                    >
-                      Aller à la liste des scénarios <i className="bi bi-arrow-right ms-1"></i>
+                      Annuler
                     </button>
                   </div>
                 </div>
@@ -1967,6 +1941,8 @@ function CreateStep() {
               )}
             </div>
           </div>
+            )
+          })()}
         </div>
       )}
 
@@ -1981,22 +1957,24 @@ function CreateStep() {
 
         <div className="d-flex align-items-center gap-2">
           {(currentStep === 2) && (
-            <>
-              <button className="pt-btn-outline" onClick={handleTestStep} disabled={isTestingStep}>
-                <i className="bi bi-play-circle text-success me-1"></i> Tester cette étape
-              </button>
-              <button className="pt-btn-primary" onClick={handleSaveStep} disabled={!!stepNameError || !!stepUrlError || !!bodyJsonError}>
-                <i className="bi bi-check-lg me-1"></i> Enregistrer l'étape
-              </button>
-            </>
+            <button className="pt-btn-outline" onClick={handleTestStep} disabled={isTestingStep}>
+              <i className="bi bi-play-circle text-success me-1"></i> Tester cette étape
+            </button>
           )}
           {currentStep < 6 && (
-            <button className="pt-btn-primary" onClick={handleNextStep}>
+            <button
+              className="pt-btn-primary"
+              onClick={handleNextStep}
+              disabled={
+                (currentStep === 2 && (!!stepNameError || !!stepUrlError || !!bodyJsonError || !!timeoutError)) ||
+                (currentStep === 4 && (!!virtualUsersError || !!rampUpError))
+              }
+            >
               Suivant <i className="bi bi-arrow-right"></i>
             </button>
           )}
           {currentStep === 6 && !savedScenario && (
-            <button className="pt-btn-primary" onClick={handleSaveScenario} disabled={savingScenario || !!stepNameError || !!stepUrlError || !!bodyJsonError}>
+            <button className="pt-btn-primary" onClick={handleSaveScenario} disabled={savingScenario || !!stepNameError || !!stepUrlError || !!bodyJsonError || !!timeoutError || !!virtualUsersError || !!rampUpError}>
               {savingScenario ? <><i className="bi bi-arrow-repeat me-1 pt-spin"></i> Enregistrement...</> : <><i className="bi bi-check-lg me-1"></i> Enregistrer le scénario</>}
             </button>
           )}

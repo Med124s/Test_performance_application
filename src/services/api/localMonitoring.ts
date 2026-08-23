@@ -19,15 +19,24 @@ export interface LocalServerMetrics {
   capturedAt: string
 }
 
-const FETCH_TIMEOUT_MS = 4000
+const FETCH_TIMEOUT_MS = 2000
 
 export const localMonitoringApi = {
   /** Interroge le service de monitoring à `monitoringUrl`. Ne lève jamais :
    * un service éteint/injoignable rend simplement `null` (les valeurs de
-   * l'exécution restent alors `null`, jamais inventées). */
-  async fetchMetrics(monitoringUrl: string): Promise<LocalServerMetrics | null> {
+   * l'exécution restent alors `null`, jamais inventées).
+   *
+   * `externalSignal`, si fourni (voir useScenarioLauncher, appelé après
+   * chaque étape pour le CPU/RAM par étape), permet d'interrompre CET APPEL
+   * immédiatement en cas d'Annulation de l'exécution — sans lui, cliquer
+   * "Annuler" pouvait rester bloqué jusqu'à `FETCH_TIMEOUT_MS` de plus,
+   * le temps que cet appel de monitoring se termine tout seul. */
+  async fetchMetrics(monitoringUrl: string, externalSignal?: AbortSignal): Promise<LocalServerMetrics | null> {
+    if (externalSignal?.aborted) return null
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    const onExternalAbort = () => controller.abort()
+    externalSignal?.addEventListener('abort', onExternalAbort)
     try {
       const response = await fetch(monitoringUrl, { signal: controller.signal })
       if (!response.ok) return null
@@ -36,6 +45,7 @@ export const localMonitoringApi = {
       return null
     } finally {
       clearTimeout(timeout)
+      externalSignal?.removeEventListener('abort', onExternalAbort)
     }
   },
 }

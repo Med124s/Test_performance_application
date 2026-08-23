@@ -23,9 +23,12 @@ export const stepsApi = {
     const keptIds = new Set(
       steps.filter((s): s is Step => 'id' in s && !!s.id).map((s) => s.id)
     )
-    await Promise.all(
-      existing.filter((s) => !keptIds.has(s.id)).map((s) => stepsApi.remove(s.id))
-    )
+    // Suppressions séquentielles plutôt qu'en parallèle : json-server
+    // (--watch, mono-thread) peut réinitialiser une connexion sous plusieurs
+    // écritures concurrentes, laissant une étape orpheline en base.
+    for (const s of existing.filter((s) => !keptIds.has(s.id))) {
+      await stepsApi.remove(s.id)
+    }
 
     const saved: Step[] = []
     for (const step of steps) {

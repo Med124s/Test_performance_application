@@ -57,8 +57,6 @@ export interface ScenarioWizardConfig {
   scheduledDate: string
   scheduledTime: string
   recurrence: string
-  notifyEmail: boolean
-  notifyOnFailureOnly: boolean
 }
 
 const STEPS_KEY = 'pt_scenario_steps'
@@ -230,7 +228,10 @@ export function loadStepDetails(id: string): StepDetails | null {
 export function updateStepCore(id: string, patch: Partial<CoreStep>) {
   const steps = loadSteps()
   if (!steps) return
-  const updated = steps.map((s) => (s.id === id ? { ...s, ...patch } : s))
+  // Comparaison en string des deux côtés : voir CreateScenario.tsx, la
+  // même classe de bug (id numérique de json-server vs id string attendu)
+  // faisait déjà échouer silencieusement ce genre de lookup ailleurs.
+  const updated = steps.map((s) => (String(s.id) === String(id) ? { ...s, ...patch } : s))
   saveSteps(updated)
 }
 

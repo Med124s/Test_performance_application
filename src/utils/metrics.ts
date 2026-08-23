@@ -7,7 +7,7 @@
 // ExecutionDetail.tsx et ExecutionReport.tsx.
 // ============================================================
 
-import { Execution, PerformanceMetrics, StepResult } from '../types'
+import { Execution, PerformanceMetrics, StepMetrics, StepResult } from '../types'
 
 export function average(nums: number[]): number {
   if (nums.length === 0) return 0
@@ -73,9 +73,38 @@ export function computePerformanceMetrics(
     avgResponseTime: Math.round(average(responseTimes)),
     minResponseTime: Math.round(min(responseTimes)),
     maxResponseTime: Math.round(max(responseTimes)),
-    p95ResponseTime: Math.round(percentile(responseTimes, 95)),
     throughput: totalDurationSec > 0 ? totalRequests / totalDurationSec : 0,
   }
+}
+
+/** Regroupe les résultats réels par étape (stepId) et calcule les métriques
+ * de CHAQUE étape séparément — jamais les métriques globales du scénario
+ * recopiées pour chaque étape. Le débit par étape utilise la même durée
+ * totale que le scénario (une étape seule n'a pas sa propre durée mesurée
+ * indépendamment). Ordre de sortie : première apparition du stepId dans
+ * `stepResults` (= ordre d'exécution réel), pas un tri alphabétique. */
+export function computeMetricsByStep(stepResults: StepResult[], totalDurationSec = 0): StepMetrics[] {
+  const order: string[] = []
+  const byStep = new Map<string, StepResult[]>()
+  stepResults.forEach((r) => {
+    const key = String(r.stepId)
+    if (!byStep.has(key)) {
+      byStep.set(key, [])
+      order.push(key)
+    }
+    byStep.get(key)!.push(r)
+  })
+  return order.map((stepId) => {
+    const results = byStep.get(stepId)!
+    const cpuSamples = results.map((r) => r.serverMetrics?.cpu).filter((v): v is number => typeof v === 'number')
+    const ramSamples = results.map((r) => r.serverMetrics?.ram).filter((v): v is number => typeof v === 'number')
+    return {
+      stepId,
+      metrics: computePerformanceMetrics(results, totalDurationSec),
+      avgCpu: cpuSamples.length > 0 ? Math.round(average(cpuSamples)) : null,
+      avgRam: ramSamples.length > 0 ? Math.round(average(ramSamples)) : null,
+    }
+  })
 }
 
 /** Même calcul, mais agrégé sur un ensemble d'exécutions réelles (durée

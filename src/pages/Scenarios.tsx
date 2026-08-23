@@ -102,9 +102,13 @@ function Scenarios() {
     setDeleting(true)
     try {
       // Supprime aussi les étapes liées (cascade côté frontend, JSON
-      // Server ne le fait pas automatiquement).
+      // Server ne le fait pas automatiquement) — séquentiellement, sinon
+      // json-server (--watch, mono-thread) peut réinitialiser une connexion
+      // sous plusieurs suppressions concurrentes et laisser une étape orpheline.
       const steps = await stepsApi.getByScenario(scenario.id)
-      await Promise.all(steps.map((s) => stepsApi.remove(s.id)))
+      for (const s of steps) {
+        await stepsApi.remove(s.id)
+      }
       await scenariosApi.remove(scenario.id)
       await refetchScenarios()
       setSelectedIds((prev) => prev.filter((id) => id !== scenario.id))
@@ -149,6 +153,17 @@ function Scenarios() {
   const handleLaunch = (scenario: Scenario) => {
     if (!canEdit) return
     launcher.openForScenario(scenario)
+  }
+
+  // Un scénario planifié (date/heure future) se déclenchera tout seul
+  // (voir hooks/useScheduledExecutions) — proposer aussi le bouton manuel
+  // ferait croire à deux exécutions possibles alors qu'une seule doit
+  // avoir lieu.
+  const isScheduledPending = (scenario: Scenario): boolean => {
+    if (scenario.schedule?.executionType !== 'scheduled') return false
+    if (!scenario.schedule.scheduledDate) return false
+    const due = new Date(`${scenario.schedule.scheduledDate}T${scenario.schedule.scheduledTime || '00:00'}`)
+    return !Number.isNaN(due.getTime()) && due.getTime() > Date.now()
   }
 
   return (
@@ -394,7 +409,7 @@ function Scenarios() {
             className="pt-btn-primary"
             onClick={() => {
               stepBridge.resetAll()
-              navigate('/scenarios/create?new=1')
+              navigate('/scenarios/new')
             }}
           >
             <i className="bi bi-plus-lg"></i>
@@ -525,9 +540,19 @@ function Scenarios() {
                           </button>
                           {canEdit && (
                             <>
-                              <button className="topbar-icon" title="Exécuter le scénario" style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--pt-success)', background: 'var(--pt-success-light)' }} onClick={() => handleLaunch(scenario)}>
-                                <i className="bi bi-play-fill" style={{ fontSize: '14px', color: 'var(--pt-success)' }}></i>
-                              </button>
+                              {isScheduledPending(scenario) ? (
+                                <span
+                                  className="pt-pill info"
+                                  style={{ fontSize: '10.5px', display: 'inline-flex', alignItems: 'center', height: '30px' }}
+                                  title={`Se lance automatiquement le ${scenario.schedule?.scheduledDate} à ${scenario.schedule?.scheduledTime}`}
+                                >
+                                  <i className="bi bi-alarm me-1"></i> Planifié
+                                </span>
+                              ) : (
+                                <button className="topbar-icon" title="Exécuter le scénario" style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--pt-success)', background: 'var(--pt-success-light)' }} onClick={() => handleLaunch(scenario)}>
+                                  <i className="bi bi-play-fill" style={{ fontSize: '14px', color: 'var(--pt-success)' }}></i>
+                                </button>
+                              )}
                               <button className="topbar-icon" title="Modifier" style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--pt-primary)', background: 'var(--pt-primary-light)' }} onClick={() => navigate(`/scenarios/create?edit=${scenario.id}`)}>
                                 <i className="bi bi-pencil" style={{ fontSize: '13px', color: 'var(--pt-primary)' }}></i>
                               </button>

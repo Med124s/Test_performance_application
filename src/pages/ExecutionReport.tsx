@@ -66,12 +66,13 @@ function ExecutionReport() {
       case 'Échouée': return { cls: 'danger', color: 'var(--pt-danger)', text: 'Échouée' }
       case 'En cours': return { cls: 'info', color: 'var(--pt-info)', text: 'En cours' }
       case 'Suspendue': return { cls: 'neutral', color: 'var(--pt-neutral)', text: 'Suspendue' }
+      case 'Annulée': return { cls: 'neutral', color: 'var(--pt-neutral)', text: 'Annulée' }
       default: return { cls: 'neutral', color: 'var(--pt-neutral)', text: 'Inconnue' }
     }
   })()
 
   const stepResults = execution?.stepResults ?? []
-  const stepById = new Map(steps.map((s) => [s.id, s]))
+  const stepById = new Map(steps.map((s) => [String(s.id), s]))
   const durationSeconds = execution ? durationToSeconds(execution.duration) : 0
   const perf = computePerformanceMetrics(stepResults, durationSeconds)
   const totalReq = perf.totalRequests
@@ -83,16 +84,16 @@ function ExecutionReport() {
 
   // Chart 1 : temps de réponse réel par étape (dans l'ordre d'exécution).
   const responseTimeData = {
-    labels: stepResults.map((r) => stepById.get(r.stepId)?.name ?? r.stepId),
+    labels: stepResults.map((r) => stepById.get(String(r.stepId))?.name ?? r.stepId),
     datasets: [{
       label: 'Temps de réponse (ms)',
       data: stepResults.map((r) => r.responseTimeMs ?? 0),
-      borderColor: '#2563EB',
-      backgroundColor: 'rgba(37, 99, 235, 0.12)',
+      borderColor: '#4F46E5',
+      backgroundColor: 'rgba(79, 70, 229, 0.12)',
       borderWidth: 2.5,
       tension: 0.3,
       fill: true,
-      pointBackgroundColor: '#2563EB',
+      pointBackgroundColor: '#4F46E5',
       pointRadius: 4,
     }],
   }
@@ -266,18 +267,6 @@ function ExecutionReport() {
             </div>
           </div>
         </div>
-        <div className="col-12 col-sm-6 col-lg">
-          <div className="pt-stat-card">
-            <div className="stat-header">
-              <div>
-                <div className="stat-label">P95</div>
-                <div className="stat-value">{perf.p95ResponseTime} ms</div>
-                <div className="stat-trend neutral">temps de réponse</div>
-              </div>
-              <div className="stat-icon purple"><i className="bi bi-graph-up-arrow"></i></div>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* 2 Charts Grid */}
@@ -359,7 +348,7 @@ function ExecutionReport() {
                     <tr><td colSpan={3} className="text-center text-muted py-3">Aucun résultat</td></tr>
                   ) : stepResults.map((r, i) => (
                     <tr key={i}>
-                      <td><span className="fw-semibold text-dark">{stepById.get(r.stepId)?.name ?? r.stepId}</span></td>
+                      <td><span className="fw-semibold text-dark">{stepById.get(String(r.stepId))?.name ?? r.stepId}</span></td>
                       <td>{r.responseTimeMs}ms</td>
                       <td><span className={r.status === 'success' ? 'text-success' : 'text-danger'}>{r.httpStatus}</span></td>
                     </tr>
@@ -390,7 +379,7 @@ function ExecutionReport() {
                   ) : errorResults.map((r, i) => (
                     <tr key={i}>
                       <td><span className="pt-pill danger py-0 px-2" style={{ fontSize: '11px', backgroundColor: '#FEE2E2', color: '#DC2626' }}>{r.httpStatus}</span></td>
-                      <td>{stepById.get(r.stepId)?.name ?? r.stepId}</td>
+                      <td>{stepById.get(String(r.stepId))?.name ?? r.stepId}</td>
                       <td>
                         <span className="text-truncate d-inline-block" style={{ maxWidth: '140px' }} title={r.error}>
                           {r.error}

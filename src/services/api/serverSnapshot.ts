@@ -1,21 +1,14 @@
-import { serversApi } from './servers'
-import { serverMetricsApi } from './serverMetrics'
 import { localMonitoringApi } from './localMonitoring'
 import { Application, ServerHealth, ServerSnapshot } from '../../types'
 
 // ============================================================
 // Point de branchement unique pour le futur backend Spring Boot + JMeter.
 //
-// AUJOURD'HUI, pour le serveur lié à l'application testée (s'il existe),
-// trois cas par ordre de priorité :
-//   1. `monitoringUrl` renseigné et joignable (Local Test Server, PC
-//      Windows — voir /local-monitoring-server) : métriques réelles,
-//      `simulated: false`.
-//   2. Sinon, une mesure de démonstration déjà enregistrée pour ce serveur
-//      (ServerMetricSample, page Métriques) : on reprend la plus récente
-//      telle quelle — jamais générée aléatoirement — avec `simulated: true`
-//      pour que l'UI l'affiche honnêtement comme donnée de démo.
-//   3. Sinon (aucun serveur lié, ou serveur sans aucune mesure) : métriques
+// AUJOURD'HUI, pour l'application testée, trois cas par ordre de priorité :
+//   1. `Application.monitoringUrl` renseigné et joignable (Local Test
+//      Server, PC Windows — voir /local-monitoring-server) : métriques
+//      réelles, `simulated: false`.
+//   2. Sinon (pas de monitoringUrl, ou service injoignable) : métriques
 //      `null`, rien n'est inventé.
 //
 // DEMAIN : un agent Spring Boot exposera la même forme de réponse sur son
@@ -31,27 +24,23 @@ const HEALTH_LABELS: Record<string, ServerHealth> = {
 }
 
 const LIVE_SOURCE_LABEL = 'Local Test Server'
-const DEMO_SOURCE_LABEL = 'Mode démonstration — données simulées'
 
 export const serverSnapshotApi = {
-  async captureForApplication(application: Application): Promise<ServerSnapshot | null> {
-    const servers = await serversApi.getAll()
-    const linkedServer = servers.find((s) => s.applicationId === application.id)
-    if (!linkedServer) return null
+  /** Capture les métriques du monitoring éventuellement branché sur cette
+   * application. Tableau vide = pas de `monitoringUrl` configuré ; un seul
+   * élément sinon (une application = un monitoringUrl). */
+  async captureForApplication(application: Application): Promise<ServerSnapshot[]> {
+    if (!application.monitoringUrl) return []
 
     const base = {
-      serverId: linkedServer.id,
-      serverName: linkedServer.name,
       applicationId: application.id,
       applicationName: application.name,
     }
 
-    const liveMetrics = linkedServer.monitoringUrl
-      ? await localMonitoringApi.fetchMetrics(linkedServer.monitoringUrl)
-      : null
+    const liveMetrics = await localMonitoringApi.fetchMetrics(application.monitoringUrl)
 
     if (liveMetrics) {
-      return {
+      return [{
         ...base,
         capturedAt: liveMetrics.capturedAt,
         cpu: liveMetrics.cpu,
@@ -61,27 +50,10 @@ export const serverSnapshotApi = {
         health: HEALTH_LABELS[liveMetrics.health] ?? null,
         source: LIVE_SOURCE_LABEL,
         simulated: false,
-      }
+      }]
     }
 
-    const samples = await serverMetricsApi.getByServer(linkedServer.id)
-    const latestSample = samples[samples.length - 1]
-
-    if (latestSample) {
-      return {
-        ...base,
-        capturedAt: new Date().toISOString(),
-        cpu: latestSample.cpuPercent,
-        ram: latestSample.ramPercent,
-        disk: latestSample.diskPercent,
-        network: latestSample.networkMbps,
-        health: latestSample.health,
-        source: DEMO_SOURCE_LABEL,
-        simulated: true,
-      }
-    }
-
-    return {
+    return [{
       ...base,
       capturedAt: new Date().toISOString(),
       cpu: null,
@@ -91,6 +63,6 @@ export const serverSnapshotApi = {
       health: null,
       source: null,
       simulated: false,
-    }
+    }]
   },
 }

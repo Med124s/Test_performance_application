@@ -30,12 +30,22 @@ export function validateMaxLength(value: string, max: number, label: string): st
 // Ne s'applique volontairement PAS aux URLs d'étapes de scénario, qui sont
 // légitimement des chemins relatifs à l'application (ex: "/auth/login") —
 // voir validateStepUrl ci-dessous.
-const ABSOLUTE_URL_RE = /^https?:\/\/[^\s]+\.[^\s]+/i
-
+//
+// Utilise le constructeur URL natif plutôt qu'une regex maison : l'ancienne
+// regex exigeait un "." après le schéma (`[^\s]+\.[^\s]+`), ce qui rejetait
+// à tort des cibles de test locales parfaitement valides comme
+// "http://localhost:6000" ou "http://localhost:4001" — bloquant justement
+// le genre d'URL qu'on utilise le plus pour tester une API locale.
 export function validateAbsoluteUrl(value: string, label = "L'URL"): string | null {
   const trimmed = value.trim()
   if (!trimmed) return null // laisse validateRequired gérer le cas vide
-  return ABSOLUTE_URL_RE.test(trimmed) ? null : `${label} doit commencer par http:// ou https://.`
+  if (!/^https?:\/\//i.test(trimmed)) return `${label} doit commencer par http:// ou https://.`
+  try {
+    new URL(trimmed)
+    return null
+  } catch {
+    return `${label} n'est pas une URL valide.`
+  }
 }
 
 // URL/ressource d'une étape : chemin relatif ("/auth/login") ou absolu
@@ -53,6 +63,15 @@ export function validateEmail(value: string, label = "L'adresse email"): string 
   const trimmed = value.trim()
   if (!trimmed) return null
   return EMAIL_RE.test(trimmed) ? null : `${label} n'est pas valide.`
+}
+
+/** Nombre entier strictement positif (Timeout, VUs, Ramp-up, Durée...) —
+ * un champ HTML `type="number"` laisse passer une valeur vide, négative,
+ * décimale ou "0" tant que rien ne le vérifie explicitement côté JS. */
+export function validatePositiveInteger(value: number, label: string): string | null {
+  if (!Number.isFinite(value)) return `${label} est obligatoire.`
+  if (!Number.isInteger(value)) return `${label} doit être un nombre entier.`
+  return value > 0 ? null : `${label} doit être supérieur à 0.`
 }
 
 export function validateJson(value: string, label = 'Le contenu JSON'): string | null {

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Line, Bar } from 'react-chartjs-2'
 import {
   Chart as ChartJS,
@@ -14,16 +15,13 @@ import {
   Filler,
 } from 'chart.js'
 import TopBar from '../components/TopBar'
-import { Application, Scenario, Step, Execution, StepResult, Server, ServerMetricSample, ServerHealth } from '../types'
+import { Application, Scenario, Step, Execution, StepResult } from '../types'
 import { applicationsApi } from '../services/api/applications'
 import { scenariosApi } from '../services/api/scenarios'
 import { stepsApi } from '../services/api/steps'
 import { executionsApi } from '../services/api/executions'
-import { serversApi } from '../services/api/servers'
-import { serverMetricsApi } from '../services/api/serverMetrics'
 import { useApiList } from '../hooks/useApiResource'
 import { useAuth } from '../context/AuthContext'
-import { firstError, validateRequired, validateMaxLength, NAME_MAX_LENGTH } from '../utils/validation'
 import { computePerformanceMetrics, durationToSeconds } from '../utils/metrics'
 
 ChartJS.register(
@@ -50,14 +48,12 @@ function Metriques() {
   const { data: allScenarios, loading: scenariosLoading } = useApiList<Scenario>(() => scenariosApi.getAll())
   const { data: allSteps } = useApiList<Step>(() => stepsApi.getAll())
   const { data: allExecutions, loading: executionsLoading } = useApiList<Execution>(() => executionsApi.getAll())
-  const { data: allServers, refetch: refetchServers } = useApiList<Server>(() => serversApi.getAll())
-  const { data: allServerMetrics, refetch: refetchServerMetrics } = useApiList<ServerMetricSample>(() => serverMetricsApi.getAll())
   const dataLoading = appsLoading || scenariosLoading || executionsLoading
 
   const allApplications = allApplicationsRaw.filter((a) => a.status === 'Actif')
-  const appById = useMemo(() => new Map(allApplicationsRaw.map((a) => [a.id, a])), [allApplicationsRaw])
-  const scenarioById = useMemo(() => new Map(allScenarios.map((s) => [s.id, s])), [allScenarios])
-  const stepById = useMemo(() => new Map(allSteps.map((s) => [s.id, s])), [allSteps])
+  const appById = useMemo(() => new Map(allApplicationsRaw.map((a) => [String(a.id), a])), [allApplicationsRaw])
+  const scenarioById = useMemo(() => new Map(allScenarios.map((s) => [String(s.id), s])), [allScenarios])
+  const stepById = useMemo(() => new Map(allSteps.map((s) => [String(s.id), s])), [allSteps])
 
   // Sélection en cascade : Application → Scénario → Étape, par vrais IDs
   // (jamais par nom). Chaque niveau filtre les statistiques de la page.
@@ -68,17 +64,17 @@ function Metriques() {
   const scenariosForSelectedApp =
     selectedApplicationId === 'all'
       ? allScenarios
-      : allScenarios.filter((s) => s.applicationId === selectedApplicationId)
+      : allScenarios.filter((s) => String(s.applicationId) === String(selectedApplicationId))
 
   const selectedScenario =
     selectedScenarioId !== 'all' ? scenarioById.get(selectedScenarioId) ?? null : null
 
   const stepsForSelectedScenario = selectedScenario
-    ? allSteps.filter((s) => s.scenarioId === selectedScenario.id)
+    ? allSteps.filter((s) => String(s.scenarioId) === String(selectedScenario.id))
     : []
 
   const selectedStep =
-    selectedStepId !== 'all' ? stepsForSelectedScenario.find((s) => s.id === selectedStepId) ?? null : null
+    selectedStepId !== 'all' ? stepsForSelectedScenario.find((s) => String(s.id) === String(selectedStepId)) ?? null : null
 
   const scopeLevel: 'all' | 'app' | 'scenario' | 'step' = selectedStep
     ? 'step'
@@ -101,7 +97,7 @@ function Metriques() {
     // application) aligne aussi le niveau "Application" par cohérence.
     if (value !== 'all') {
       const sc = scenarioById.get(value)
-      if (sc) setSelectedApplicationId(sc.applicationId)
+      if (sc) setSelectedApplicationId(String(sc.applicationId))
     }
   }
 
@@ -119,18 +115,32 @@ function Metriques() {
 
   // ---- Agrégation RÉELLE des résultats selon le niveau sélectionné ----
   const matchingExecutions = allExecutions.filter((e) => {
-    if (scopeLevel === 'scenario' || scopeLevel === 'step') return e.scenarioId === selectedScenario!.id
-    if (scopeLevel === 'app') return e.applicationId === selectedApplicationId
+    if (scopeLevel === 'scenario' || scopeLevel === 'step') return String(e.scenarioId) === String(selectedScenario!.id)
+    if (scopeLevel === 'app') return String(e.applicationId) === String(selectedApplicationId)
     return true
   }).sort((a, b) => (a.startedAt < b.startedAt ? -1 : 1))
 
   const matchingResults: { result: StepResult; execution: Execution }[] = []
   matchingExecutions.forEach((e) => {
     e.stepResults.forEach((r) => {
-      if (scopeLevel === 'step' && r.stepId !== selectedStep!.id) return
+      if (scopeLevel === 'step' && String(r.stepId) !== String(selectedStep!.id)) return
       matchingResults.push({ result: r, execution: e })
     })
   })
+
+  // Consommation serveur réelle de l'étape sélectionnée — moyenne des
+  // relevés CPU/RAM capturés après chaque requête réelle de cette étape
+  // (voir StepResult.serverMetrics, alimenté par useScenarioLauncher).
+  // `null` tant qu'aucun relevé n'existe, jamais une valeur inventée.
+  const stepServerSamples = matchingResults
+    .map((r) => r.result.serverMetrics)
+    .filter((m): m is { cpu: number; ram: number; capturedAt: string } => !!m)
+  const stepAvgCpu = stepServerSamples.length > 0
+    ? Math.round(stepServerSamples.reduce((s, m) => s + m.cpu, 0) / stepServerSamples.length)
+    : null
+  const stepAvgRam = stepServerSamples.length > 0
+    ? Math.round(stepServerSamples.reduce((s, m) => s + m.ram, 0) / stepServerSamples.length)
+    : null
 
   const totalDurationSec = matchingExecutions.reduce((sum, e) => sum + durationToSeconds(e.duration), 0)
   const perf = computePerformanceMetrics(matchingResults.map((r) => r.result), totalDurationSec)
@@ -139,7 +149,6 @@ function Metriques() {
   const errorCount = perf.errorCount
   const errorRateVal = perf.errorRate
   const avgDurationVal = perf.avgResponseTime
-  const p95Val = perf.p95ResponseTime
   const throughputVal = perf.throughput
   const maxVUsVal = matchingExecutions.length > 0
     ? Math.max(...matchingExecutions.map((e) => parseInt(e.users) || 0))
@@ -168,13 +177,6 @@ function Metriques() {
       color: 'purple',
     },
     {
-      title: 'P95',
-      value: `${p95Val} ms`,
-      subtitle: '95% des requêtes sous ce seuil',
-      icon: 'bi-graph-up-arrow',
-      color: 'purple',
-    },
-    {
       title: 'Taux erreur',
       value: `${errorRateVal.toFixed(2)}%`,
       subtitle: `${errorCount} erreur${errorCount > 1 ? 's' : ''}`,
@@ -200,12 +202,12 @@ function Metriques() {
     datasets: [{
       label: 'Utilisateurs virtuels (VUs)',
       data: matchingExecutions.map((e) => parseInt(e.users) || 0),
-      borderColor: '#2563EB',
-      backgroundColor: 'rgba(37, 99, 235, 0.12)',
+      borderColor: '#4F46E5',
+      backgroundColor: 'rgba(79, 70, 229, 0.12)',
       borderWidth: 2,
       tension: 0.3,
       fill: true,
-      pointBackgroundColor: '#2563EB',
+      pointBackgroundColor: '#4F46E5',
       pointRadius: 3,
     }],
   }
@@ -224,10 +226,10 @@ function Metriques() {
     datasets: [{
       label: 'Temps de réponse moyen (ms)',
       data: matchingExecutions.map((e) => {
-        const results = e.stepResults.filter((r) => scopeLevel !== 'step' || r.stepId === selectedStep!.id)
+        const results = e.stepResults.filter((r) => scopeLevel !== 'step' || String(r.stepId) === String(selectedStep!.id))
         return results.length > 0 ? Math.round(results.reduce((s, r) => s + (r.responseTimeMs ?? 0), 0) / results.length) : 0
       }),
-      borderColor: '#2563EB',
+      borderColor: '#4F46E5',
       borderWidth: 2, tension: 0.3, pointRadius: 3,
     }],
   }
@@ -246,7 +248,7 @@ function Metriques() {
     datasets: [{
       label: "Taux d'erreur (%)",
       data: matchingExecutions.map((e) => {
-        const results = e.stepResults.filter((r) => scopeLevel !== 'step' || r.stepId === selectedStep!.id)
+        const results = e.stepResults.filter((r) => scopeLevel !== 'step' || String(r.stepId) === String(selectedStep!.id))
         const errs = results.filter((r) => r.status === 'error').length
         return results.length > 0 ? Math.round((errs / results.length) * 10000) / 100 : 0
       }),
@@ -267,10 +269,11 @@ function Metriques() {
   // Table 1 (vue globale) : Top Applications par requêtes réelles.
   const reqsByApp = new Map<string, number>()
   allExecutions.forEach((e) => {
-    reqsByApp.set(e.applicationId, (reqsByApp.get(e.applicationId) ?? 0) + e.stepResults.length)
+    const key = String(e.applicationId)
+    reqsByApp.set(key, (reqsByApp.get(key) ?? 0) + e.stepResults.length)
   })
   const totalReqsAllApps = Array.from(reqsByApp.values()).reduce((a, b) => a + b, 0)
-  const appColors = ['#2563EB', '#22C55E', '#F59E0B', '#8B5CF6', '#EC4899']
+  const appColors = ['#4F46E5', '#22C55E', '#F59E0B', '#8B5CF6', '#EC4899']
   const topApplications = Array.from(reqsByApp.entries())
     .map(([appId, reqs]) => ({ appId, name: appById.get(appId)?.name ?? appId, reqs, percent: totalReqsAllApps > 0 ? Math.round((reqs / totalReqsAllApps) * 1000) / 10 : 0 }))
     .sort((a, b) => b.reqs - a.reqs)
@@ -279,7 +282,7 @@ function Metriques() {
 
   // Durée moyenne réelle par scénario, à partir de toutes ses exécutions.
   const avgDurationForScenario = (scenarioId: string): number | null => {
-    const results = allExecutions.filter((e) => e.scenarioId === scenarioId).flatMap((e) => e.stepResults)
+    const results = allExecutions.filter((e) => String(e.scenarioId) === String(scenarioId)).flatMap((e) => e.stepResults)
     if (results.length === 0) return null
     return Math.round(results.reduce((s, r) => s + (r.responseTimeMs ?? 0), 0) / results.length)
   }
@@ -296,7 +299,7 @@ function Metriques() {
   // Table 2 (vue "Application") : scénarios de cette appli, durée réelle.
   const scenariosOfSelectedApp = scenariosForSelectedApp.map((sc) => {
     const avg = avgDurationForScenario(sc.id)
-    const stepCount = allSteps.filter((s) => s.scenarioId === sc.id).length
+    const stepCount = allSteps.filter((s) => String(s.scenarioId) === String(sc.id)).length
     return avg !== null
       ? { id: sc.id, name: sc.name, duration: `${avg} ms`, stepCount, ...statusForDuration(avg) }
       : { id: sc.id, name: sc.name, duration: '—', stepCount, status: 'Jamais exécuté', color: 'neutral' }
@@ -304,9 +307,9 @@ function Metriques() {
 
   // Table 2 (vue "Scénario") : étapes réelles, durée moyenne réelle par étape.
   const stepsOfSelectedScenario = stepsForSelectedScenario.map((st) => {
-    const results = allExecutions.filter((e) => e.scenarioId === selectedScenario?.id)
+    const results = allExecutions.filter((e) => String(e.scenarioId) === String(selectedScenario?.id))
       .flatMap((e) => e.stepResults)
-      .filter((r) => r.stepId === st.id)
+      .filter((r) => String(r.stepId) === String(st.id))
     const duration = results.length > 0
       ? Math.round(results.reduce((s, r) => s + (r.responseTimeMs ?? 0), 0) / results.length)
       : 0
@@ -329,147 +332,6 @@ function Metriques() {
     .slice(0, 4)
     .map((g) => ({ ...g, count: g.count.toLocaleString('fr-FR'), rate: totalErrorsAll > 0 ? `${((g.count / totalErrorsAll) * 100).toFixed(2)}%` : '0%' }))
 
-  // ---- Serveurs monitorés : agrégats réels calculés depuis serverMetrics
-  // (jamais de valeur générée à l'affichage — seules les mesures elles-mêmes,
-  // saisies explicitement via "+ Ajouter une mesure", sont des données
-  // ponctuelles fournies par l'utilisateur). ----
-  const metricsByServer = useMemo(() => {
-    const map = new Map<string, ServerMetricSample[]>()
-    allServerMetrics.forEach((m) => {
-      const list = map.get(m.serverId) ?? []
-      list.push(m)
-      map.set(m.serverId, list)
-    })
-    for (const list of map.values()) list.sort((a, b) => (a.recordedAt < b.recordedAt ? -1 : 1))
-    return map
-  }, [allServerMetrics])
-
-  const serverRows = allServers.map((srv) => {
-    const samples = metricsByServer.get(srv.id) ?? []
-    const n = samples.length
-    const avgCpu = n > 0 ? samples.reduce((s, m) => s + m.cpuPercent, 0) / n : 0
-    const avgRam = n > 0 ? samples.reduce((s, m) => s + m.ramPercent, 0) / n : 0
-    const avgDisk = n > 0 ? samples.reduce((s, m) => s + m.diskPercent, 0) / n : 0
-    const avgNetwork = n > 0 ? samples.reduce((s, m) => s + m.networkMbps, 0) / n : 0
-    const latestHealth: ServerHealth | null = n > 0 ? samples[n - 1].health : null
-    const latestRecordedAt: string | null = n > 0 ? samples[n - 1].recordedAt : null
-    return { server: srv, samples, avgCpu, avgRam, avgDisk, avgNetwork, latestHealth, latestRecordedAt, count: n }
-  })
-
-  const [selectedServerId, setSelectedServerId] = useState<string | null>(null)
-  const selectedServerRow = serverRows.find((r) => r.server.id === selectedServerId) ?? null
-
-  const [showServerModal, setShowServerModal] = useState(false)
-  const [editingServerId, setEditingServerId] = useState<string | null>(null)
-  const [serverForm, setServerForm] = useState<{ name: string; address: string; type: Server['type']; applicationId: string }>({
-    name: '', address: '', type: 'Application', applicationId: '',
-  })
-  const [showMetricModal, setShowMetricModal] = useState(false)
-  const [metricForm, setMetricForm] = useState<{ cpuPercent: number; ramPercent: number; diskPercent: number; networkMbps: number; health: ServerHealth }>({
-    cpuPercent: 50, ramPercent: 50, diskPercent: 40, networkMbps: 50, health: 'Sain',
-  })
-  const [serverSaving, setServerSaving] = useState(false)
-  // Validation harmonisée (même pattern que Applications/CreateScenario) :
-  // erreurs affichées au blur puis systématiquement à la tentative
-  // d'enregistrement, bouton désactivé tant que le formulaire est invalide.
-  const [serverFormTouched, setServerFormTouched] = useState<{ name?: boolean; address?: boolean }>({})
-  const serverNameError = firstError(
-    validateRequired(serverForm.name, 'Le nom'),
-    validateMaxLength(serverForm.name, NAME_MAX_LENGTH, 'Le nom')
-  )
-  const serverAddressError = validateRequired(serverForm.address, "L'adresse")
-  const isServerFormValid = !serverNameError && !serverAddressError
-
-  const openAddServer = () => {
-    if (!canEdit) return
-    setEditingServerId(null)
-    setServerForm({ name: '', address: '', type: 'Application', applicationId: '' })
-    setServerFormTouched({})
-    setShowServerModal(true)
-  }
-  const openEditServer = (srv: Server) => {
-    if (!canEdit) return
-    setEditingServerId(srv.id)
-    setServerForm({ name: srv.name, address: srv.address, type: srv.type, applicationId: srv.applicationId ?? '' })
-    setServerFormTouched({})
-    setShowServerModal(true)
-  }
-  const handleSaveServer = async () => {
-    if (!canEdit) return
-    setServerFormTouched({ name: true, address: true })
-    if (!isServerFormValid || serverSaving) return
-    setServerSaving(true)
-    try {
-      const payload = { ...serverForm, applicationId: serverForm.applicationId || undefined }
-      if (editingServerId) {
-        await serversApi.update(editingServerId, payload)
-      } else {
-        await serversApi.create({ ...payload, createdAt: new Date().toISOString() })
-      }
-      await refetchServers()
-      setShowServerModal(false)
-    } finally {
-      setServerSaving(false)
-    }
-  }
-  const handleDeleteServer = async (srv: Server) => {
-    if (!canEdit) return
-    if (!window.confirm(`Supprimer le serveur "${srv.name}" et toutes ses mesures ?`)) return
-    const samples = metricsByServer.get(srv.id) ?? []
-    await Promise.all(samples.map((m) => serverMetricsApi.remove(m.id)))
-    await serversApi.remove(srv.id)
-    if (selectedServerId === srv.id) setSelectedServerId(null)
-    await Promise.all([refetchServers(), refetchServerMetrics()])
-  }
-  const handleAddMetric = async () => {
-    if (!canEdit) return
-    if (!selectedServerId || serverSaving) return
-    setServerSaving(true)
-    try {
-      await serverMetricsApi.create({
-        serverId: selectedServerId,
-        recordedAt: new Date().toISOString(),
-        cpuPercent: metricForm.cpuPercent,
-        ramPercent: metricForm.ramPercent,
-        diskPercent: metricForm.diskPercent,
-        networkMbps: metricForm.networkMbps,
-        health: metricForm.health,
-      })
-      await refetchServerMetrics()
-      setShowMetricModal(false)
-    } finally {
-      setServerSaving(false)
-    }
-  }
-
-  const serverChartLabels = (selectedServerRow?.samples ?? []).map((m) =>
-    new Date(m.recordedAt).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })
-  )
-  const serverDiskData = {
-    labels: serverChartLabels,
-    datasets: [{
-      label: `${selectedServerRow?.server.name ?? ''} — Disk (%)`,
-      data: (selectedServerRow?.samples ?? []).map((m) => m.diskPercent),
-      borderColor: '#2563EB', backgroundColor: 'rgba(37,99,235,0.1)', fill: true, tension: 0.3, pointRadius: 3,
-    }],
-  }
-  const serverCpuData = {
-    labels: serverChartLabels,
-    datasets: [{ label: 'CPU (%)', data: (selectedServerRow?.samples ?? []).map((m) => m.cpuPercent), backgroundColor: '#F59E0B', borderRadius: 4 }],
-  }
-  const serverRamData = {
-    labels: serverChartLabels,
-    datasets: [{ label: 'RAM (%)', data: (selectedServerRow?.samples ?? []).map((m) => m.ramPercent), backgroundColor: '#8B5CF6', borderRadius: 4 }],
-  }
-  const serverNetworkData = {
-    labels: serverChartLabels,
-    datasets: [{ label: 'Network (Mbps)', data: (selectedServerRow?.samples ?? []).map((m) => m.networkMbps), borderColor: '#22C55E', backgroundColor: 'rgba(34,197,94,0.15)', fill: true, tension: 0.3, pointRadius: 3 }],
-  }
-  const smallChartOptions = {
-    responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
-    scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: 'rgba(0,0,0,0.05)' } } },
-  }
 
   return (
     <div className="pt-content">
@@ -531,7 +393,7 @@ function Metriques() {
               <option value="all">Tous les scénarios</option>
               {scenariosForSelectedApp.map((sc) => (
                 <option key={sc.id} value={sc.id}>
-                  {sc.name}{selectedApplicationId === 'all' ? ` (${appById.get(sc.applicationId)?.name ?? ''})` : ''}
+                  {sc.name}{selectedApplicationId === 'all' ? ` (${appById.get(String(sc.applicationId))?.name ?? ''})` : ''}
                 </option>
               ))}
             </select>
@@ -612,10 +474,9 @@ function Metriques() {
                   Temps de réponse
                 </h6>
                 <small style={{ fontSize: '12px', color: 'var(--pt-text-muted)' }}>
-                  Moyenne par exécution (ms) — P95 global : {p95Val} ms
+                  Moyenne par exécution (ms)
                 </small>
               </div>
-              <span className="pt-pill warning">P95: {p95Val} ms</span>
             </div>
             <div style={{ height: '260px' }}>
               <Line data={responseTimeData} options={responseTimeOptions} />
@@ -846,7 +707,7 @@ function Metriques() {
                           </td>
                           <td><span style={{ fontSize: '13px', fontWeight: 600 }}>{st.name}</span></td>
                           <td>
-                            <code style={{ fontSize: '12px', color: 'var(--pt-primary)', background: 'rgba(37,99,235,0.06)', padding: '0.1rem 0.35rem', borderRadius: '4px' }}>
+                            <code style={{ fontSize: '12px', color: 'var(--pt-primary)', background: 'rgba(79,70,229,0.06)', padding: '0.1rem 0.35rem', borderRadius: '4px' }}>
                               {st.url}
                             </code>
                           </td>
@@ -886,7 +747,7 @@ function Metriques() {
                 </div>
                 <div className="col-12">
                   <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)', marginBottom: '4px' }}>URL / Ressource</div>
-                  <code style={{ fontSize: '13px', color: 'var(--pt-primary)', background: 'rgba(37,99,235,0.06)', padding: '0.25rem 0.5rem', borderRadius: '4px', display: 'inline-block' }}>
+                  <code style={{ fontSize: '13px', color: 'var(--pt-primary)', background: 'rgba(79,70,229,0.06)', padding: '0.25rem 0.5rem', borderRadius: '4px', display: 'inline-block' }}>
                     {selectedStep.url}
                   </code>
                 </div>
@@ -900,6 +761,52 @@ function Metriques() {
                   </button>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {scopeLevel === 'step' && selectedStep && (
+          <div className="col-12 col-lg-4">
+            <div className="pt-card h-100">
+              <h6 style={{ fontSize: '14px', fontWeight: 600, marginBottom: '1rem' }}>
+                <i className="bi bi-cpu me-2 text-primary"></i>Consommation serveur
+              </h6>
+              {stepAvgCpu == null ? (
+                <p className="text-muted mb-0" style={{ fontSize: '12.5px' }}>
+                  <i className="bi bi-info-circle me-1"></i>
+                  Aucun relevé CPU/RAM pour cette étape — vérifie que l'application a une URL de monitoring configurée et qu'un test a tourné depuis.
+                </p>
+              ) : (
+                <div className="row g-3">
+                  <div className="col-6">
+                    <div className="pt-stat-card" style={{ padding: '0.75rem' }}>
+                      <div className="stat-header">
+                        <span className="stat-label">CPU moyen</span>
+                        <div className="stat-icon orange"><i className="bi bi-cpu"></i></div>
+                      </div>
+                      <div className="stat-value" style={{ fontSize: '20px', color: stepAvgCpu > 85 ? 'var(--pt-danger)' : stepAvgCpu > 60 ? 'var(--pt-warning)' : 'var(--pt-success)' }}>
+                        {stepAvgCpu}%
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-6">
+                    <div className="pt-stat-card" style={{ padding: '0.75rem' }}>
+                      <div className="stat-header">
+                        <span className="stat-label">RAM moyenne</span>
+                        <div className="stat-icon purple"><i className="bi bi-memory"></i></div>
+                      </div>
+                      <div className="stat-value" style={{ fontSize: '20px', color: (stepAvgRam ?? 0) > 85 ? 'var(--pt-danger)' : (stepAvgRam ?? 0) > 60 ? 'var(--pt-warning)' : 'var(--pt-success)' }}>
+                        {stepAvgRam}%
+                      </div>
+                    </div>
+                  </div>
+                  <div className="col-12">
+                    <span className="pt-pill neutral" style={{ fontSize: '10.5px' }}>
+                      <i className="bi bi-broadcast me-1"></i>{stepServerSamples.length} relevé{stepServerSamples.length > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -946,272 +853,78 @@ function Metriques() {
         </div>
       </div>
 
-      {/* Serveurs monitorés — ressource indépendante (id_serveur), CRUD réel
-          via JSON Server ; les agrégats CPU/RAM/Disk/Network/Health sont
-          calculés depuis les vraies mesures enregistrées (serverMetrics),
-          jamais générés à l'affichage. Séparé visuellement des métriques de
-          performance ci-dessus (endpoints/scénarios) — ce sont deux
-          domaines distincts qui ne doivent jamais être mélangés. */}
-      <div className="d-flex align-items-center gap-2 mb-2 mt-2" style={{ fontSize: '11.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--pt-text-muted)' }}>
-        <i className="bi bi-hdd-rack" style={{ color: 'var(--pt-primary)' }}></i> SERVER MONITORING
-        <span className="pt-pill neutral" style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: 'normal' }}>
-          <i className="bi bi-info-circle"></i> Mode démonstration — données simulées
-        </span>
-      </div>
-      <div className="pt-card mb-4" style={{ padding: 0 }}>
-        <div className="p-3 d-flex justify-content-between align-items-center flex-wrap gap-2" style={{ borderBottom: '1px solid var(--pt-border)' }}>
-          <div>
-            <h6 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>
-              Serveurs monitorés <span className="pt-pill neutral ms-1" style={{ fontSize: '10.5px' }}>id_serveur</span>
-            </h6>
-            <small style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)' }}>
-              Vue d'ensemble des ressources par serveur (CPU/RAM liés via id_serveur)
-            </small>
-          </div>
-          {canEdit && (
-            <button className="pt-btn-primary" style={{ fontSize: '12.5px' }} onClick={openAddServer}>
-              <i className="bi bi-plus-lg"></i> Ajouter un serveur
-            </button>
-          )}
-        </div>
-
-        {serverRows.length === 0 ? (
-          <div className="pt-empty-state">
-            <i className="bi bi-hdd-stack" style={{ fontSize: '28px', color: 'var(--pt-text-light)' }}></i>
-            <p>Aucun serveur monitoré pour l'instant.</p>
-          </div>
-        ) : (
-        <div className="pt-table-wrapper">
-          <table className="pt-table">
-            <thead>
-              <tr>
-                <th>Serveur</th>
-                <th>Adresse</th>
-                <th>Type</th>
-                <th style={{ textAlign: 'right' }}>CPU moyen</th>
-                <th style={{ textAlign: 'right' }}>RAM moyenne</th>
-                <th style={{ textAlign: 'right' }}>Disk moyen</th>
-                <th style={{ textAlign: 'right' }}>Network moy.</th>
-                <th style={{ textAlign: 'right' }}>Health</th>
-                <th style={{ textAlign: 'right' }}>Mesures</th>
-                <th style={{ textAlign: 'right' }}>Dernière mesure</th>
-                <th style={{ textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {serverRows.map(({ server: srv, avgCpu, avgRam, avgDisk, avgNetwork, latestHealth, latestRecordedAt, count }) => (
-                <tr
-                  key={srv.id}
-                  onClick={() => setSelectedServerId(srv.id)}
-                  style={{ cursor: 'pointer', background: selectedServerId === srv.id ? 'var(--pt-sidebar-item-hover)' : undefined }}
-                >
-                  <td>
-                    <div className="d-flex align-items-center gap-2">
-                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: avgCpu > 85 ? 'var(--pt-danger)' : avgCpu > 60 ? 'var(--pt-warning)' : 'var(--pt-success)', flexShrink: 0 }}></span>
-                      <div>
-                        <span style={{ fontSize: '13px', fontWeight: 600 }}>{srv.name}</span>
-                        {srv.applicationId && (
-                          <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)' }}>
-                            <i className="bi bi-link-45deg"></i> {appById.get(srv.applicationId)?.name ?? srv.applicationId}
-                          </div>
-                        )}
-                      </div>
+      {/* Chronologie & Logs de l'étape sélectionnée — même esprit que Détail
+          exécution (voir ExecutionDetail.tsx), mais agrégé sur TOUTES les
+          exécutions réelles de cette étape plutôt qu'une seule. */}
+      {scopeLevel === 'step' && selectedStep && (
+        <>
+          <div className="pt-card mb-3">
+            <div className="pt-card-title mb-3">
+              <i className="bi bi-hourglass-split me-2 text-primary"></i>
+              Chronologie des requêtes réelles — {selectedStep.name}
+            </div>
+            {matchingResults.length === 0 ? (
+              <p className="text-muted mb-0" style={{ fontSize: '13px' }}>Aucune requête envoyée pour le moment sur cette étape.</p>
+            ) : (
+              <div style={{ position: 'relative', paddingLeft: '26px', maxHeight: '320px', overflowY: 'auto' }}>
+                <div style={{ position: 'absolute', left: '8px', top: '6px', bottom: '6px', width: '2px', background: 'var(--pt-border)' }}></div>
+                {matchingResults.slice().reverse().map(({ result: r, execution: e }, idx) => {
+                  const type = r.status === 'success' ? 'success' : r.status === 'skipped' ? 'skipped' : 'warning'
+                  const dotColor = type === 'success' ? 'var(--pt-success)' : type === 'skipped' ? 'var(--pt-text-light)' : 'var(--pt-warning)'
+                  const dotIcon = type === 'success' ? 'bi-check' : type === 'skipped' ? 'bi-dash' : 'bi-exclamation'
+                  return (
+                    <div key={idx} className="d-flex align-items-baseline flex-wrap" style={{ position: 'relative', gap: '6px 10px', padding: '5px 0' }}>
+                      <span style={{
+                        position: 'absolute', left: '-26px', top: '6px', width: '17px', height: '17px', borderRadius: '50%',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        background: dotColor, color: 'white', fontSize: '10px', flexShrink: 0,
+                      }}>
+                        <i className={`bi ${dotIcon}`}></i>
+                      </span>
+                      <Link to={`/executions/detail/${e.id}`} className="fw-semibold text-decoration-none" style={{ fontSize: '12.5px' }}>
+                        Exécution #{e.id}{r.vu !== undefined ? ` · VU ${r.vu + 1}` : ''}
+                      </Link>
+                      <span className="text-muted font-monospace" style={{ fontSize: '11px', wordBreak: 'break-word' }}>
+                        {r.status === 'success'
+                          ? `${r.request?.method} ${r.request?.url} → ${r.httpStatus} (${r.responseTimeMs} ms)`
+                          : r.status === 'skipped'
+                          ? 'Étape ignorée — aucune requête envoyée.'
+                          : (r.error ?? `Échec sur ${r.request?.method} ${r.request?.url}`)}
+                      </span>
+                      <span className="text-muted" style={{ fontSize: '10.5px', marginLeft: 'auto' }}>
+                        {new Date(e.startedAt).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </span>
                     </div>
-                  </td>
-                  <td><code style={{ fontSize: '12px' }}>{srv.address}</code></td>
-                  <td><span className="pt-pill neutral">{srv.type}</span></td>
-                  <td style={{ textAlign: 'right', fontWeight: 600, color: avgCpu > 85 ? 'var(--pt-danger)' : avgCpu > 60 ? 'var(--pt-warning)' : 'var(--pt-success)' }}>{count > 0 ? `${avgCpu.toFixed(1)}%` : '—'}</td>
-                  <td style={{ textAlign: 'right', fontWeight: 600, color: avgRam > 85 ? 'var(--pt-danger)' : avgRam > 60 ? 'var(--pt-warning)' : 'var(--pt-success)' }}>{count > 0 ? `${avgRam.toFixed(1)}%` : '—'}</td>
-                  <td style={{ textAlign: 'right' }}>{count > 0 ? `${avgDisk.toFixed(1)}%` : '—'}</td>
-                  <td style={{ textAlign: 'right' }}>{count > 0 ? `${avgNetwork.toFixed(1)} Mbps` : '—'}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    {latestHealth ? (
-                      <span className={`pt-pill ${latestHealth === 'Sain' ? 'success' : latestHealth === 'Dégradé' ? 'warning' : 'danger'}`}>{latestHealth}</span>
-                    ) : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right', color: 'var(--pt-text-muted)' }}>{count}</td>
-                  <td style={{ textAlign: 'right', fontSize: '12px', color: 'var(--pt-text-muted)' }}>
-                    {latestRecordedAt ? new Date(latestRecordedAt).toLocaleString('fr-FR') : '—'}
-                  </td>
-                  <td style={{ textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
-                    {canEdit && (
-                      <div className="d-flex justify-content-end gap-1">
-                        <button className="topbar-icon" style={{ width: '28px', height: '28px' }} title="Modifier" onClick={() => openEditServer(srv)}>
-                          <i className="bi bi-pencil" style={{ fontSize: '12px' }}></i>
-                        </button>
-                        <button className="topbar-icon" style={{ width: '28px', height: '28px' }} title="Supprimer" onClick={() => handleDeleteServer(srv)}>
-                          <i className="bi bi-trash" style={{ fontSize: '12px', color: 'var(--pt-danger)' }}></i>
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        )}
-      </div>
-
-      {selectedServerRow && (
-        <div className="pt-card mb-4">
-          <div className="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <h6 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>
-              <i className="bi bi-hdd-network me-2 text-primary"></i>
-              Détail — {selectedServerRow.server.name}
-            </h6>
-            {canEdit && (
-              <button className="pt-btn-outline" style={{ fontSize: '12.5px' }} onClick={() => setShowMetricModal(true)}>
-                <i className="bi bi-plus-lg"></i> Ajouter une mesure
-              </button>
+                  )
+                })}
+              </div>
             )}
           </div>
 
-          {selectedServerRow.count === 0 ? (
-            <p className="text-muted mb-0" style={{ fontSize: '13px' }}>Aucune mesure enregistrée pour ce serveur.</p>
-          ) : (
-          <div className="row g-3">
-            <div className="col-12 col-lg-6">
-              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>Disk par serveur</div>
-              <div style={{ height: '220px' }}><Line data={serverDiskData} options={smallChartOptions} /></div>
-            </div>
-            <div className="col-12 col-lg-6">
-              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>Network par serveur</div>
-              <div style={{ height: '220px' }}><Line data={serverNetworkData} options={smallChartOptions} /></div>
-            </div>
-            <div className="col-12 col-lg-6">
-              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>CPU par serveur</div>
-              <div style={{ height: '220px' }}><Bar data={serverCpuData} options={smallChartOptions} /></div>
-            </div>
-            <div className="col-12 col-lg-6">
-              <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '8px' }}>RAM par serveur</div>
-              <div style={{ height: '220px' }}><Bar data={serverRamData} options={smallChartOptions} /></div>
-            </div>
-          </div>
-          )}
-        </div>
-      )}
-
-      {/* Modale Ajouter / Modifier un serveur */}
-      {showServerModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-          <div style={{ background: 'var(--pt-card-bg)', borderRadius: 'var(--pt-radius)', padding: '2rem', width: '420px', maxWidth: '95vw', border: '1px solid var(--pt-border)', boxShadow: '0 25px 50px rgba(0,0,0,0.25)' }}>
-            <div className="d-flex justify-content-between align-items-center mb-4">
-              <h5 style={{ fontWeight: 700, margin: 0 }}>{editingServerId ? 'Modifier le serveur' : 'Ajouter un serveur'}</h5>
-              <button onClick={() => setShowServerModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: 'var(--pt-text-muted)' }}>
-                <i className="bi bi-x"></i>
-              </button>
-            </div>
-            <div className="d-flex flex-column gap-3">
-              <div>
-                <label className="pt-form-label">Nom *</label>
-                <input
-                  className="pt-form-control"
-                  style={{ width: '100%', borderColor: serverFormTouched.name && serverNameError ? 'var(--pt-danger)' : undefined }}
-                  placeholder="ex: Serveur Web"
-                  value={serverForm.name}
-                  onChange={(e) => setServerForm((p) => ({ ...p, name: e.target.value }))}
-                  onBlur={() => setServerFormTouched((t) => ({ ...t, name: true }))}
-                />
-                {serverFormTouched.name && serverNameError && (
-                  <div style={{ color: 'var(--pt-danger)', fontSize: '12px', marginTop: '4px' }}>{serverNameError}</div>
-                )}
-              </div>
-              <div>
-                <label className="pt-form-label">Adresse *</label>
-                <input
-                  className="pt-form-control"
-                  style={{ width: '100%', borderColor: serverFormTouched.address && serverAddressError ? 'var(--pt-danger)' : undefined }}
-                  placeholder="ex: 192.168.1.10"
-                  value={serverForm.address}
-                  onChange={(e) => setServerForm((p) => ({ ...p, address: e.target.value }))}
-                  onBlur={() => setServerFormTouched((t) => ({ ...t, address: true }))}
-                />
-                {serverFormTouched.address && serverAddressError && (
-                  <div style={{ color: 'var(--pt-danger)', fontSize: '12px', marginTop: '4px' }}>{serverAddressError}</div>
-                )}
-              </div>
-              <div>
-                <label className="pt-form-label">Type</label>
-                <select className="pt-form-control" style={{ width: '100%' }} value={serverForm.type} onChange={(e) => setServerForm((p) => ({ ...p, type: e.target.value as Server['type'] }))}>
-                  <option>Application</option>
-                  <option>Base de données</option>
-                  <option>Load Balancer</option>
-                  <option>Cache</option>
-                  <option>Autre</option>
-                </select>
-              </div>
-              <div>
-                <label className="pt-form-label">Application associée</label>
-                <select className="pt-form-control" style={{ width: '100%' }} value={serverForm.applicationId} onChange={(e) => setServerForm((p) => ({ ...p, applicationId: e.target.value }))}>
-                  <option value="">Aucune</option>
-                  {allApplications.map((a) => (
-                    <option key={a.id} value={a.id}>{a.name}</option>
-                  ))}
-                </select>
-                <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)', marginTop: '4px' }}>
-                  Permet à une exécution de cette application de retrouver automatiquement ce serveur (Server Snapshot).
-                </div>
-              </div>
-            </div>
-            <div className="d-flex gap-2 justify-content-end mt-4">
-              <button onClick={() => setShowServerModal(false)} style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)', borderRadius: 'var(--pt-radius-sm)', padding: '8px 20px', cursor: 'pointer', fontSize: '13.5px' }}>
-                Annuler
-              </button>
-              <button onClick={handleSaveServer} disabled={!isServerFormValid || serverSaving} className="pt-btn-primary" style={{ padding: '8px 20px' }}>
-                {serverSaving ? 'Enregistrement...' : 'Enregistrer'}
-              </button>
+          <div className="pt-card mb-4">
+            <div className="pt-card-title mb-3"><i className="bi bi-terminal me-2 text-info"></i>Logs — {selectedStep.name}</div>
+            <div style={{ maxHeight: '260px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '12px', background: 'var(--pt-bg)', borderRadius: '8px', padding: '0.75rem', border: '1px solid var(--pt-border)' }}>
+              {matchingResults.length === 0 ? (
+                <p className="text-muted mb-0">Aucun log disponible.</p>
+              ) : matchingResults.slice().reverse().map(({ result: r, execution: e }, idx) => {
+                const level = r.status === 'success' ? 'INFO' : r.status === 'skipped' ? 'SKIP' : 'ERROR'
+                return (
+                  <div key={idx} className="d-flex gap-2 mb-2 pb-2 border-bottom border-light-subtle align-items-start">
+                    <span className="text-muted" style={{ minWidth: '80px' }}>#{e.id}{r.vu !== undefined ? `.VU${r.vu + 1}` : ''}</span>
+                    <span className={`badge ${level === 'ERROR' ? 'bg-danger text-white' : level === 'SKIP' ? 'bg-secondary-subtle text-secondary' : 'bg-info-subtle text-info'}`} style={{ minWidth: '45px', fontSize: '10px' }}>{level}</span>
+                    <span className="text-dark" style={{ wordBreak: 'break-word' }}>
+                      {r.status === 'success'
+                        ? `${r.request?.method} ${r.request?.url} → ${r.httpStatus} en ${r.responseTimeMs}ms`
+                        : r.status === 'skipped'
+                        ? 'Étape ignorée (inactive)'
+                        : `${r.error} — ${r.request?.method} ${r.request?.url}`}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Modale Ajouter une mesure réelle pour le serveur sélectionné */}
-      {showMetricModal && selectedServerRow && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-          <div style={{ background: 'var(--pt-card-bg)', borderRadius: 'var(--pt-radius)', padding: '2rem', width: '420px', maxWidth: '95vw', border: '1px solid var(--pt-border)', boxShadow: '0 25px 50px rgba(0,0,0,0.25)' }}>
-            <div className="d-flex justify-content-between align-items-center mb-4">
-              <h5 style={{ fontWeight: 700, margin: 0 }}>Nouvelle mesure — {selectedServerRow.server.name}</h5>
-              <button onClick={() => setShowMetricModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: 'var(--pt-text-muted)' }}>
-                <i className="bi bi-x"></i>
-              </button>
-            </div>
-            <div className="row g-3">
-              <div className="col-6">
-                <label className="pt-form-label">CPU (%)</label>
-                <input type="number" min={0} max={100} className="pt-form-control" style={{ width: '100%' }} value={metricForm.cpuPercent} onChange={(e) => setMetricForm((p) => ({ ...p, cpuPercent: +e.target.value }))} />
-              </div>
-              <div className="col-6">
-                <label className="pt-form-label">RAM (%)</label>
-                <input type="number" min={0} max={100} className="pt-form-control" style={{ width: '100%' }} value={metricForm.ramPercent} onChange={(e) => setMetricForm((p) => ({ ...p, ramPercent: +e.target.value }))} />
-              </div>
-              <div className="col-6">
-                <label className="pt-form-label">Disk (%)</label>
-                <input type="number" min={0} max={100} className="pt-form-control" style={{ width: '100%' }} value={metricForm.diskPercent} onChange={(e) => setMetricForm((p) => ({ ...p, diskPercent: +e.target.value }))} />
-              </div>
-              <div className="col-6">
-                <label className="pt-form-label">Network (Mbps)</label>
-                <input type="number" min={0} className="pt-form-control" style={{ width: '100%' }} value={metricForm.networkMbps} onChange={(e) => setMetricForm((p) => ({ ...p, networkMbps: +e.target.value }))} />
-              </div>
-              <div className="col-6">
-                <label className="pt-form-label">Health</label>
-                <select className="pt-form-control" style={{ width: '100%' }} value={metricForm.health} onChange={(e) => setMetricForm((p) => ({ ...p, health: e.target.value as ServerHealth }))}>
-                  <option>Sain</option>
-                  <option>Dégradé</option>
-                  <option>Critique</option>
-                </select>
-              </div>
-            </div>
-            <div className="d-flex gap-2 justify-content-end mt-4">
-              <button onClick={() => setShowMetricModal(false)} style={{ background: 'var(--pt-bg)', border: '1px solid var(--pt-border)', borderRadius: 'var(--pt-radius-sm)', padding: '8px 20px', cursor: 'pointer', fontSize: '13.5px' }}>
-                Annuler
-              </button>
-              <button onClick={handleAddMetric} disabled={serverSaving} className="pt-btn-primary" style={{ padding: '8px 20px' }}>
-                {serverSaving ? 'Enregistrement...' : 'Ajouter la mesure'}
-              </button>
-            </div>
-          </div>
-        </div>
+        </>
       )}
 
       {/* Footer */}

@@ -22,12 +22,22 @@ export interface Application {
   authPassword?: string
   authClientId?: string
   authClientSecret?: string
+  /** URL d'un service de monitoring (ex. Local Test Server local, agent
+   * Spring Boot demain — voir services/api/localMonitoring.ts) rapportant
+   * le vrai CPU/RAM de la machine qui héberge cette application. Distincte
+   * de `url` (l'application testée elle-même) : deux adresses différentes,
+   * un même serveur physique. Absente : pas de monitoring branché, aucune
+   * valeur CPU/RAM n'est inventée pour autant. */
+  monitoringUrl?: string
 }
 
-/** Statut de connexion affiché dans la colonne "Statut" — dérivé de la
- * dernière exécution réelle de cette application (calculé côté frontend,
- * jamais stocké en dur, pour rester une source de vérité unique). */
-export type ApplicationConnectionStatus = 'Connectée' | 'Échouée' | 'Erreur' | 'Déconnectée'
+/** Statut de connexion affiché dans la colonne "Statut" — représente
+ * UNIQUEMENT l'accessibilité réelle de l'application cible (le serveur a-t-il
+ * répondu à au moins une requête récente ?), jamais la réussite/échec d'un
+ * test métier (assertions, codes 4xx/5xx applicatifs) — ça, c'est le rôle du
+ * statut d'Exécution, une information différente. Dérivé de la dernière
+ * exécution réelle (calculé côté frontend, jamais stocké en dur). */
+export type ApplicationConnectionStatus = 'Connectée' | 'Non connectée'
 
 export interface ScenarioVariable {
   id: number
@@ -40,8 +50,6 @@ export interface ScenarioSchedule {
   scheduledDate?: string
   scheduledTime?: string
   recurrence?: string
-  notifyEmail?: boolean
-  notifyOnFailureOnly?: boolean
 }
 
 export interface Scenario {
@@ -122,11 +130,16 @@ export interface StepResult {
   /** Index (0-based) de l'utilisateur virtuel réel ayant produit ce résultat
    * — plusieurs VUs rejouent le même stepId au sein d'une même Execution. */
   vu?: number
+  /** Relevé CPU/RAM réel du serveur monitoré, capturé juste après cette
+   * requête précise (voir useScenarioLauncher) — absent si aucun serveur
+   * avec monitoringUrl n'est lié à l'application testée, ou si l'appel a
+   * échoué (jamais une valeur inventée). */
+  serverMetrics?: { cpu: number; ram: number; capturedAt: string } | null
 }
 
 /** Statut global d'une exécution (cohérent avec les résultats réels des
  * étapes — voir computeExecutionStatus dans services/api/executions.ts). */
-export type ExecutionStatus = 'Réussie' | 'Avec erreurs' | 'Échouée' | 'En cours' | 'Suspendue'
+export type ExecutionStatus = 'Réussie' | 'Avec erreurs' | 'Échouée' | 'En cours' | 'Suspendue' | 'Annulée'
 
 export interface Execution {
   id: EntityId
@@ -138,8 +151,13 @@ export interface Execution {
   duration: string
   stepResults: StepResult[]
   errors: string[]
-  /** Snapshot figé des métriques serveur au moment du lancement — voir
-   * ServerSnapshot. Absent sur les exécutions créées avant cette fonctionnalité. */
+  /** Snapshots figés des métriques de TOUS les serveurs liés à l'application
+   * testée au moment du lancement (voir serverSnapshotApi) — plusieurs
+   * serveurs monitorés (ex. Application + Base de données) sont possibles,
+   * un tableau vide signifie "aucun serveur lié". */
+  serverSnapshots?: ServerSnapshot[]
+  /** @deprecated Ancien champ (un seul serveur) — conservé en lecture pour
+   * les exécutions créées avant le support multi-serveurs ; ne plus écrire. */
   serverSnapshot?: ServerSnapshot | null
 }
 
@@ -173,33 +191,20 @@ export interface PerformanceMetrics {
   avgResponseTime: number // ms
   minResponseTime: number // ms
   maxResponseTime: number // ms
-  p95ResponseTime: number // ms
   throughput: number // req/s
 }
 
-// ============================================================
-// Serveurs monitorés — ressource indépendante des Applications de test :
-// un serveur d'infrastructure (CPU/RAM/latence) que l'on surveille, avec ses
-// mesures réelles associées (voir ServerMetricSample). Chaque mesure est un
-// point de données saisi (ou importé) explicitement — jamais générée
-// aléatoirement à l'affichage.
-// ============================================================
-
-export interface Server {
-  id: EntityId
-  name: string
-  address: string
-  type: 'Application' | 'Base de données' | 'Load Balancer' | 'Cache' | 'Autre'
-  createdAt: string
-  /** Application testée que ce serveur héberge (optionnel — un serveur
-   * d'infrastructure partagé, ex. load balancer, peut rester non rattaché).
-   * Permet à une exécution de retrouver automatiquement "son" serveur. */
-  applicationId?: EntityId
-  /** URL d'une API de monitoring capable de rapporter les métriques réelles
-   * de CE serveur (ex. Local Test Server pour le PC de développement
-   * aujourd'hui, agent Spring Boot demain — voir services/api/serverSnapshot.ts).
-   * Absent : le serveur n'a pas (encore) de monitoring branché. */
-  monitoringUrl?: string
+/** Métriques calculées pour UNE étape précise au sein d'une exécution
+ * (regroupe tous les StepResult de ce stepId, tous VUs/itérations confondus)
+ * — jamais les métriques globales du scénario recopiées par étape. */
+export interface StepMetrics {
+  stepId: EntityId
+  metrics: PerformanceMetrics
+  /** Moyennes réelles des relevés CPU/RAM capturés après chaque requête de
+   * cette étape (voir StepResult.serverMetrics) — `null` si aucun relevé
+   * n'a pu être capturé pour cette étape (jamais une valeur inventée). */
+  avgCpu: number | null
+  avgRam: number | null
 }
 
 /** Niveau de santé global du serveur au moment de la mesure — indépendant
@@ -207,29 +212,15 @@ export interface Server {
  * dans StepResult, jamais ici). */
 export type ServerHealth = 'Sain' | 'Dégradé' | 'Critique'
 
-export interface ServerMetricSample {
-  id: EntityId
-  serverId: EntityId
-  recordedAt: string
-  cpuPercent: number
-  ramPercent: number
-  diskPercent: number
-  networkMbps: number
-  health: ServerHealth
-}
-
 // ============================================================
 // Snapshot serveur figé par exécution — voir services/api/serverSnapshot.ts.
-// Champs volontairement nommés comme le futur backend Spring Boot
+// Dérivé directement d'Application.monitoringUrl (pas d'entité Serveur
+// séparée). Champs volontairement nommés comme le futur backend Spring Boot
 // (GET /executions/{id}/server-metrics -> {cpu, ram, disk, network, health})
 // pour que le branchement futur ne nécessite aucun renommage côté frontend.
-// Tant qu'aucun vrai backend n'est branché, seule la relation (serverId) est
-// connue ; les valeurs numériques restent `null` — jamais inventées.
 // ============================================================
 
 export interface ServerSnapshot {
-  serverId: EntityId | null
-  serverName: string | null
   applicationId: EntityId | null
   applicationName: string | null
   capturedAt: string | null
@@ -238,15 +229,12 @@ export interface ServerSnapshot {
   disk: number | null
   network: number | null
   health: ServerHealth | null
-  /** D'où viennent les valeurs ci-dessus (ex. "Local Test Server", ou le
-   * libellé de démonstration) — `null` tant qu'aucune source, réelle ou
-   * simulée, n'a pu être résolue, pour ne jamais laisser croire que des
-   * métriques `null` viennent d'un monitoring actif. */
+  /** D'où viennent les valeurs ci-dessus (ex. "Local Test Server") — `null`
+   * tant qu'aucune source n'a pu être résolue, pour ne jamais laisser croire
+   * que des métriques `null` viennent d'un monitoring actif. */
   source: string | null
-  /** `true` si cpu/ram/disk/network/health viennent de données de
-   * démonstration pré-enregistrées (ServerMetricSample) plutôt que d'un
-   * monitoring réellement interrogé en direct (Local Test Server aujourd'hui,
-   * agent Spring Boot demain) — pilote l'affichage honnête du badge dans
-   * ExecutionDetail. Absent/`false` = source réelle (ou aucune donnée). */
+  /** `true` si les valeurs viennent de données de démonstration plutôt que
+   * d'un monitoring réellement interrogé en direct. Absent/`false` = source
+   * réelle (ou aucune donnée). */
   simulated?: boolean
 }

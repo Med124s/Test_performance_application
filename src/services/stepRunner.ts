@@ -165,6 +165,10 @@ export interface RunStepOptions {
   /** Think Time de repli (ms) si l'étape ne définit pas son propre
    * `pauseBeforeMs` — vient du formulaire de lancement (override ponctuel). */
   thinkTimeOverrideMs?: number
+  /** Signal externe (partagé par toute l'exécution, voir useScenarioLauncher)
+   * permettant à "Annuler" d'interrompre réellement une requête déjà en
+   * vol, pas seulement d'empêcher la suivante de démarrer. */
+  signal?: AbortSignal
 }
 
 /**
@@ -182,7 +186,11 @@ export async function runStep(
   defaultTimeoutMs: number,
   options: RunStepOptions = {}
 ): Promise<StepResult> {
-  const { variables = {}, vu, thinkTimeOverrideMs } = options
+  const { variables = {}, vu, thinkTimeOverrideMs, signal: externalSignal } = options
+
+  if (externalSignal?.aborted) {
+    return { stepId: step.id, status: 'skipped', vu }
+  }
 
   if (step.active === false) {
     console.log(`[stepRunner] "${step.name}" désactivée — ignorée (skipped)`)
@@ -224,6 +232,8 @@ export async function runStep(
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const onExternalAbort = () => controller.abort()
+  externalSignal?.addEventListener('abort', onExternalAbort)
   const startedAt = performance.now()
 
   try {
@@ -289,7 +299,9 @@ export async function runStep(
     // serveur, mais le JS n'a jamais accès à la réponse.
     const isNetworkOrCors = err instanceof TypeError
     const message = isAbort
-      ? `Timeout dépassé (${timeoutMs} ms) sur "${resolvedStep.name}"`
+      ? externalSignal?.aborted
+        ? `Requête annulée par l'utilisateur sur "${resolvedStep.name}"`
+        : `Timeout dépassé (${timeoutMs} ms) sur "${resolvedStep.name}"`
       : isNetworkOrCors
       ? `Requête bloquée (réseau/CORS/redirection refusée) sur "${resolvedStep.name}" : ${err.message}`
       : err instanceof Error
@@ -306,6 +318,7 @@ export async function runStep(
     }
   } finally {
     clearTimeout(timer)
+    externalSignal?.removeEventListener('abort', onExternalAbort)
   }
 }
 

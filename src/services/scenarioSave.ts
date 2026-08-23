@@ -88,30 +88,39 @@ export async function saveScenarioWithSteps(params: SaveScenarioParams): Promise
     (id) => !params.localSteps.some((s) => s.id === id)
   )
 
-  await Promise.all([
-    ...params.localSteps.map((s) => {
-      const payload = {
-        scenarioId: scenario.id,
-        order: s.order,
-        name: s.name,
-        method: s.method,
-        url: s.url,
-        description: s.description,
-        headers: s.headers,
-        bodyJson: s.bodyJson,
-        assertions: s.assertions,
-        timeoutMs: s.timeoutMs,
-        active: s.active,
-        followRedirects: s.followRedirects,
-        pauseBeforeMs: s.pauseBeforeMs,
-        pacingAfterMs: s.pacingAfterMs,
-      }
-      return params.existingStepIds.has(s.id)
-        ? stepsApi.update(s.id, payload)
-        : stepsApi.create(payload)
-    }),
-    ...removedIds.map((id) => stepsApi.remove(id)),
-  ])
+  // Écrit les étapes une par une plutôt qu'en parallèle (Promise.all) :
+  // json-server (--watch, mono-thread, fichier unique) ne tient pas la
+  // charge de plusieurs écritures concurrentes sur un scénario à
+  // beaucoup d'étapes — certaines requêtes se terminaient en
+  // ERR_CONNECTION_RESET et l'étape correspondante n'était jamais
+  // enregistrée alors que le scénario, lui, semblait sauvegardé.
+  for (const s of params.localSteps) {
+    const payload = {
+      scenarioId: scenario.id,
+      order: s.order,
+      name: s.name,
+      method: s.method,
+      url: s.url,
+      description: s.description,
+      headers: s.headers,
+      bodyJson: s.bodyJson,
+      assertions: s.assertions,
+      timeoutMs: s.timeoutMs,
+      active: s.active,
+      followRedirects: s.followRedirects,
+      pauseBeforeMs: s.pauseBeforeMs,
+      pacingAfterMs: s.pacingAfterMs,
+    }
+    if (params.existingStepIds.has(s.id)) {
+      await stepsApi.update(s.id, payload)
+    } else {
+      await stepsApi.create(payload)
+    }
+  }
+
+  for (const id of removedIds) {
+    await stepsApi.remove(id)
+  }
 
   return scenario
 }

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import TopBar from '../components/TopBar'
 import { Application, Step } from '../types'
@@ -107,6 +107,11 @@ function CreateScenario() {
   // on récupère alors les vraies infos déjà enregistrées pour ce scénario
   // (et ses vraies étapes) depuis JSON Server.
   const editScenarioId = searchParams.get('edit')
+  // "Créer un scénario personnalisé" (depuis CreateScenarioLanding) arrive
+  // avec ?app=<id> : l'application est déjà choisie explicitement par
+  // l'utilisateur, jamais présélectionnée automatiquement (voir l'effet de
+  // synchronisation plus bas, qui ne retombe plus sur applications[0]).
+  const appIdFromQuery = searchParams.get('app')
 
   const [steps, setSteps] = useState<ScenarioStep[]>(() =>
     isNewScenario ? [] : stepBridge.loadSteps() as unknown as ScenarioStep[] ?? initialSteps
@@ -122,7 +127,30 @@ function CreateScenario() {
   useEffect(() => {
     stepBridge.saveSteps(steps as unknown as stepBridge.CoreStep[])
   }, [steps])
+  // Estimation réelle (pas une valeur inventée) du temps d'un seul passage
+  // du scénario par UN utilisateur virtuel : somme des vraies pauses/pacing
+  // déjà configurés par étape (voir CreateStep.tsx), ou le délai par défaut
+  // de l'application pour les étapes pas encore configurées en détail.
+  // Ne couvre volontairement PAS le ramp-up ni la répétition sur plusieurs
+  // VUs — ces valeurs (Utilisateurs, Planification) ne sont pas encore
+  // connues à cet écran (étape 1 du wizard).
+  const estimatedSingleRunSeconds = useMemo(() => {
+    const defaultWaitMs = loadDefaultTestSettings().stepDelayMs
+    return steps.reduce((total, s) => {
+      const details = stepBridge.loadStepDetails(s.id)
+      const waitMs = details ? details.pauseBeforeMs + details.pacingAfterMs : defaultWaitMs
+      return total + waitMs / 1000
+    }, 0)
+  }, [steps])
+
   const [selectedStepIds, setSelectedStepIds] = useState<string[]>([])
+  // Suppression réelle et immédiate (pas un simple retrait du brouillon
+  // local) — sans ça, une étape supprimée réapparaissait tant que le
+  // scénario n'était pas réenregistré jusqu'au Résumé. `null`/`false` =
+  // aucune confirmation affichée.
+  const [deleteStepConfirmId, setDeleteStepConfirmId] = useState<string | null>(null)
+  const [showDeleteSelectedConfirm, setShowDeleteSelectedConfirm] = useState(false)
+  const [deletingSteps, setDeletingSteps] = useState(false)
   const savedMeta = stepBridge.loadScenarioMeta()
   const [scenarioId, setScenarioId] = useState<string | null>(editScenarioId)
 
@@ -139,7 +167,7 @@ function CreateScenario() {
     savedMeta?.name ?? (isNewScenario ? '' : 'Parcours Utilisateur Complet')
   )
   const [application, setApplication] = useState(savedMeta?.application ?? '')
-  const [applicationId, setApplicationId] = useState(savedMeta?.applicationId ?? '')
+  const [applicationId, setApplicationId] = useState(savedMeta?.applicationId ?? appIdFromQuery ?? '')
   const [description, setDescription] = useState(
     savedMeta?.description ?? (isNewScenario ? '' : 'Test complet du parcours utilisateur sur le site e-commerce.')
   )
@@ -190,12 +218,21 @@ function CreateScenario() {
     Promise.all([scenariosApi.getById(editScenarioId), stepsApi.getByScenario(editScenarioId)])
       .then(([scenario, apiSteps]) => {
         if (cancelled) return
-        setScenarioId(scenario.id)
+        setScenarioId(String(scenario.id))
         setScenarioName(scenario.name)
-        setApplicationId(scenario.applicationId)
+        setApplicationId(String(scenario.applicationId))
         setDescription(scenario.description ?? '')
+        // String(s.id) : json-server renvoie des ids numériques pour les
+        // ressources créées sans id explicite, alors que tout le code de
+        // cette page compare les ids en `===` en s'attendant à des strings
+        // (le type TS le déclare, mais rien ne le garantit à l'exécution) —
+        // sans cette conversion à la frontière API, cliquer sur une étape
+        // pour la modifier ne la retrouve jamais (17 === "17" est faux), et
+        // CreateStep retombe silencieusement sur ses valeurs par défaut
+        // ("Login utilisateur" / "/auth/login") quelle que soit l'étape
+        // réellement cliquée.
         const mappedSteps: ScenarioStep[] = apiSteps.map((s) => ({
-          id: s.id,
+          id: String(s.id),
           order: s.order,
           method: s.method,
           name: s.name,
@@ -204,7 +241,7 @@ function CreateScenario() {
           status: 'Actif',
         }))
         setSteps(mappedSteps)
-        setExistingStepIds(new Set(apiSteps.map((s) => s.id)))
+        setExistingStepIds(new Set(apiSteps.map((s) => String(s.id))))
       })
       .catch(() => showNotification("Impossible de charger le scénario à modifier.", 'danger'))
       .finally(() => { if (!cancelled) setLoadingEdit(false) })
@@ -213,24 +250,32 @@ function CreateScenario() {
   }, [editScenarioId])
 
   // Synchronise le nom d'application affiché avec l'ID sélectionné (source
-  // de vérité pour la relation Scénario → Application).
+  // de vérité pour la relation Scénario → Application) — comparaison en
+  // string des deux côtés : json-server peut renvoyer des ids numériques
+  // pour certaines applications alors que `e.target.value` d'un <select>
+  // est toujours une string ; comparer strictement (`===`) sans coercion
+  // faisait échouer silencieusement ce lookup dès qu'on choisissait une
+  // application dont l'id n'était pas une string, laissant `application`
+  // bloqué sur son ancienne valeur.
+  //
+  // Aucune présélection automatique de la première application ici — voir
+  // CreateScenarioLanding.tsx, qui est désormais le seul point d'entrée
+  // pour un nouveau scénario et impose un choix explicite.
   useEffect(() => {
-    if (applicationId) {
-      const app = applications.find((a) => a.id === applicationId)
-      if (app) setApplication(app.name)
-    } else if (application && applications.length > 0 && !editScenarioId) {
-      const app = applications.find((a) => a.name === application)
-      if (app) setApplicationId(app.id)
-      else if (applications[0]) {
-        setApplicationId(applications[0].id)
-        setApplication(applications[0].name)
-      }
-    } else if (!applicationId && applications.length > 0 && !editScenarioId) {
-      setApplicationId(applications[0].id)
-      setApplication(applications[0].name)
-    }
+    if (!applicationId) return
+    const app = applications.find((a) => String(a.id) === String(applicationId))
+    if (app) setApplication(app.name)
+  }, [applicationId, applications])
+
+  // Garde-fou : si on arrive sur cet écran sans application connue (ni
+  // édition, ni ?app=, ni brouillon en cours dans le pont), il n'y a rien
+  // de valide à afficher — on renvoie vers le choix d'application plutôt
+  // que de présélectionner silencieusement la première de la liste.
+  useEffect(() => {
+    if (editScenarioId || appIdFromQuery || savedMeta?.applicationId) return
+    navigate('/scenarios/new', { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applications, editScenarioId])
+  }, [])
 
   // Garde les infos générales du scénario (nom/application/description)
   // disponibles pour la suite du wizard (Configuration → ... → Résumé sur
@@ -259,6 +304,11 @@ function CreateScenario() {
 
   // Add / Edit step modal state
   const [showStepModal, setShowStepModal] = useState(false)
+  // Anti double-clic sur "Ajouter l'étape" / "Enregistrer les modifications"
+  // — handleSaveStep est synchrone (pas de requête réseau à ce stade), mais
+  // un double-clic assez rapide peut encore déclencher deux appels avant le
+  // re-render qui masquerait normalement le bouton.
+  const [savingStep, setSavingStep] = useState(false)
   const [editingStepId, setEditingStepId] = useState<string | null>(null)
   const [stepFormMethod, setStepFormMethod] = useState<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'>('GET')
   const [stepFormName, setStepFormName] = useState('')
@@ -327,13 +377,67 @@ function CreateScenario() {
     }
   }
 
-  const handleDeleteStep = (id: string) => {
-    const updated = steps.filter((s) => s.id !== id)
-    updated.forEach((s, idx) => {
-      s.order = idx + 1
-    })
-    setSteps(updated)
-    showNotification('Étape supprimée du scénario')
+  // Suppression réelle : une étape déjà enregistrée (id réel, pas "tmp-")
+  // est immédiatement supprimée sur JSON Server — elle ne doit jamais
+  // pouvoir "réapparaître" faute d'avoir réenregistré tout le scénario.
+  const handleDeleteStep = async (id: string) => {
+    if (deletingSteps) return
+    setDeletingSteps(true)
+    try {
+      if (!id.startsWith('tmp-')) {
+        await stepsApi.remove(id)
+      }
+      const updated = steps.filter((s) => String(s.id) !== String(id))
+      updated.forEach((s, idx) => { s.order = idx + 1 })
+      setSteps(updated)
+      setSelectedStepIds((prev) => prev.filter((i) => String(i) !== String(id)))
+      setExistingStepIds((prev) => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+      showNotification('Étape supprimée définitivement.')
+    } catch (err) {
+      showNotification(err instanceof Error ? err.message : "Erreur lors de la suppression de l'étape", 'danger')
+    } finally {
+      setDeletingSteps(false)
+      setDeleteStepConfirmId(null)
+    }
+  }
+
+  // Suppression en masse (sélection via la case "tout sélectionner" de
+  // l'en-tête, ou une sélection partielle) — en parallèle : contrairement
+  // à scenarioSave.ts (POST/PATCH avec un vrai corps JSON, sensibles aux
+  // écritures concurrentes rapprochées sous json-server mono-thread), de
+  // simples DELETE sur des ids distincts ne se marchent pas dessus, et
+  // l'utilisateur attend que "tout" disparaisse d'un coup, pas étape par
+  // étape.
+  const handleDeleteSelectedSteps = async () => {
+    if (deletingSteps || selectedStepIds.length === 0) return
+    setDeletingSteps(true)
+    try {
+      await Promise.all(
+        selectedStepIds
+          .filter((id) => !id.startsWith('tmp-'))
+          .map((id) => stepsApi.remove(id))
+      )
+      const removed = new Set(selectedStepIds.map(String))
+      const updated = steps.filter((s) => !removed.has(String(s.id)))
+      updated.forEach((s, idx) => { s.order = idx + 1 })
+      setSteps(updated)
+      setSelectedStepIds([])
+      setExistingStepIds((prev) => {
+        const next = new Set(prev)
+        removed.forEach((id) => next.delete(id))
+        return next
+      })
+      showNotification(`${selectedStepIds.length} étape(s) supprimée(s) définitivement.`)
+    } catch (err) {
+      showNotification(err instanceof Error ? err.message : 'Erreur lors de la suppression des étapes', 'danger')
+    } finally {
+      setDeletingSteps(false)
+      setShowDeleteSelectedConfirm(false)
+    }
   }
 
   const moveStepUp = (index: number) => {
@@ -372,7 +476,7 @@ function CreateScenario() {
   // simulé. Une erreur réseau/CORS/timeout réelle est affichée telle
   // quelle, jamais remplacée par un faux succès.
   const handleRunTest = async () => {
-    const application = applications.find((a) => a.id === applicationId)
+    const application = applications.find((a) => String(a.id) === String(applicationId))
     if (!application) {
       showNotification('Aucune application sélectionnée : impossible de tester.', 'danger')
       return
@@ -496,8 +600,6 @@ function CreateScenario() {
               scheduledDate: wizardConfig.scheduledDate || undefined,
               scheduledTime: wizardConfig.scheduledTime || undefined,
               recurrence: wizardConfig.recurrence || undefined,
-              notifyEmail: wizardConfig.notifyEmail,
-              notifyOnFailureOnly: wizardConfig.notifyOnFailureOnly,
             }
           : undefined,
       })
@@ -523,6 +625,7 @@ function CreateScenario() {
     setStepFormTimeout('Status 200')
     setStepFormStatus('Actif')
     setStepFormTouched({})
+    setSavingStep(false)
     setShowStepModal(true)
   }
 
@@ -534,16 +637,20 @@ function CreateScenario() {
     setStepFormTimeout(step.timeout)
     setStepFormStatus(step.status)
     setStepFormTouched({})
+    setSavingStep(false)
     setShowStepModal(true)
   }
 
   const closeStepModal = () => {
     setShowStepModal(false)
+    setSavingStep(false)
   }
 
   const handleSaveStep = () => {
+    if (savingStep) return
     setStepFormTouched({ name: true, url: true })
     if (!isStepFormValid) return
+    setSavingStep(true)
 
     if (editingStepId !== null) {
       // Update an existing step in place
@@ -861,9 +968,9 @@ function CreateScenario() {
                 <button type="button" className="pt-btn-outline" onClick={closeStepModal}>
                   Annuler
                 </button>
-                <button type="button" className="pt-btn-primary" onClick={handleSaveStep} disabled={!isStepFormValid}>
+                <button type="button" className="pt-btn-primary" onClick={handleSaveStep} disabled={savingStep || !isStepFormValid}>
                   <i className="bi bi-check-lg me-1"></i>
-                  {editingStepId !== null ? 'Enregistrer les modifications' : "Ajouter l'étape"}
+                  {savingStep ? 'Enregistrement...' : editingStepId !== null ? 'Enregistrer les modifications' : "Ajouter l'étape"}
                 </button>
               </div>
             </div>
@@ -1025,7 +1132,7 @@ function CreateScenario() {
               value={applicationId}
               onChange={(e) => {
                 setApplicationId(e.target.value)
-                const app = applications.find((a) => a.id === e.target.value)
+                const app = applications.find((a) => String(a.id) === e.target.value)
                 if (app) setApplication(app.name)
               }}
             >
@@ -1070,12 +1177,16 @@ function CreateScenario() {
               Étapes du scénario <span className="pt-pill neutral ms-1">{steps.length} étapes</span>
             </h6>
           </div>
-
-          <div className="d-flex align-items-center gap-2">
-            <button className="pt-btn-outline" style={{ fontSize: '12.5px' }}>
-              <i className="bi bi-file-earmark-text"></i> Templates <i className="bi bi-chevron-down" style={{ fontSize: '10px' }}></i>
+          {selectedStepIds.length > 0 && (
+            <button
+              className="pt-btn-outline"
+              style={{ fontSize: '12.5px', color: 'var(--pt-danger)', borderColor: 'var(--pt-danger)' }}
+              onClick={() => setShowDeleteSelectedConfirm(true)}
+              disabled={deletingSteps}
+            >
+              <i className="bi bi-trash me-1"></i> Supprimer la sélection ({selectedStepIds.length})
             </button>
-          </div>
+          )}
         </div>
 
         {/* Steps Table */}
@@ -1171,7 +1282,7 @@ function CreateScenario() {
                           style={{
                             fontSize: '12.5px',
                             color: 'var(--pt-primary)',
-                            background: 'rgba(37,99,235,0.06)',
+                            background: 'rgba(79,70,229,0.06)',
                             padding: '0.15rem 0.4rem',
                             borderRadius: '4px',
                           }}
@@ -1246,7 +1357,7 @@ function CreateScenario() {
                             className="topbar-icon"
                             title="Supprimer"
                             style={{ width: '32px', height: '32px' }}
-                            onClick={() => handleDeleteStep(step.id)}
+                            onClick={() => setDeleteStepConfirmId(step.id)}
                           >
                             <i
                               className="bi bi-trash"
@@ -1269,7 +1380,17 @@ function CreateScenario() {
           style={{ borderTop: '1px solid var(--pt-border)', background: 'var(--pt-card-bg)' }}
         >
           <span style={{ fontSize: '13px', color: 'var(--pt-text-muted)' }}>
-            <i className="bi bi-clock me-1"></i> Durée estimée : ~ 2 min 30 sec
+            {steps.length > 0 && (
+              <>
+                <i className="bi bi-clock me-1"></i> Estimation d'un passage (1 utilisateur) : ~{' '}
+                {estimatedSingleRunSeconds >= 60
+                  ? `${Math.floor(estimatedSingleRunSeconds / 60)} min ${Math.round(estimatedSingleRunSeconds % 60)} sec`
+                  : `${Math.round(estimatedSingleRunSeconds)} sec`}
+                {' '}<span title="Ne couvre pas le ramp-up ni la répétition sur plusieurs utilisateurs virtuels, configurés aux étapes suivantes.">
+                  <i className="bi bi-info-circle" style={{ fontSize: '11px' }}></i>
+                </span>
+              </>
+            )}
           </span>
 
           <div className="d-flex align-items-center gap-2">
@@ -1292,6 +1413,68 @@ function CreateScenario() {
           </div>
         </div>
       </div>
+
+      {/* Confirmation de suppression — la suppression d'étape est désormais
+          réelle et immédiate (voir handleDeleteStep), donc irréversible :
+          une confirmation est indispensable avant d'agir. */}
+      {deleteStepConfirmId !== null && (
+        <div className="modal fade show d-block" tabIndex={-1} style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1060 }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+              <div className="modal-body p-4">
+                <h6 style={{ fontWeight: 700 }}>Supprimer cette étape ?</h6>
+                <p className="text-muted mb-0" style={{ fontSize: '13.5px' }}>
+                  Cette étape sera supprimée définitivement, tout de suite. Cette action ne peut pas être annulée.
+                </p>
+              </div>
+              <div className="modal-footer">
+                <button className="pt-btn-outline" onClick={() => setDeleteStepConfirmId(null)} disabled={deletingSteps}>
+                  Annuler
+                </button>
+                <button
+                  className="pt-btn-primary"
+                  style={{ background: 'var(--pt-danger)', borderColor: 'var(--pt-danger)' }}
+                  onClick={() => deleteStepConfirmId && handleDeleteStep(deleteStepConfirmId)}
+                  disabled={deletingSteps}
+                >
+                  {deletingSteps ? <><i className="bi bi-arrow-repeat me-1 pt-spin"></i> Suppression...</> : <><i className="bi bi-trash me-1"></i> Oui, supprimer</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeleteSelectedConfirm && (
+        <div className="modal fade show d-block" tabIndex={-1} style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1060 }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content">
+              <div className="modal-body p-4">
+                <h6 style={{ fontWeight: 700 }}>Supprimer {selectedStepIds.length} étape(s) ?</h6>
+                <p className="text-muted mb-0" style={{ fontSize: '13.5px' }}>
+                  {selectedStepIds.length === steps.length
+                    ? 'Toutes les étapes du scénario seront supprimées définitivement, tout de suite.'
+                    : 'Les étapes sélectionnées seront supprimées définitivement, tout de suite.'}
+                  {' '}Cette action ne peut pas être annulée.
+                </p>
+              </div>
+              <div className="modal-footer">
+                <button className="pt-btn-outline" onClick={() => setShowDeleteSelectedConfirm(false)} disabled={deletingSteps}>
+                  Annuler
+                </button>
+                <button
+                  className="pt-btn-primary"
+                  style={{ background: 'var(--pt-danger)', borderColor: 'var(--pt-danger)' }}
+                  onClick={handleDeleteSelectedSteps}
+                  disabled={deletingSteps}
+                >
+                  {deletingSteps ? <><i className="bi bi-arrow-repeat me-1 pt-spin"></i> Suppression...</> : <><i className="bi bi-trash me-1"></i> Oui, supprimer</>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
