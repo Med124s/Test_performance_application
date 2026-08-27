@@ -6,7 +6,7 @@
 export interface CoreStep {
   id: string
   order: number
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'TRACE'
   name: string
   url: string
   timeout: string

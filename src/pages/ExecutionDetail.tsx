@@ -312,6 +312,20 @@ function ExecutionDetail() {
         </div>
       </div>
 
+      {/* Résumé global : statut du scénario + nombre d'étapes réussies/échouées,
+          visible d'un coup d'œil avant le détail KPI/étape par étape. */}
+      <div className="pt-card mb-3 py-3 px-3 d-flex align-items-center flex-wrap gap-3">
+        <span className={`pt-pill ${statusBadge.cls}`} style={{ fontSize: '13px' }}>
+          <i className={`bi ${statusBadge.icon}`}></i> Scénario {statusBadge.text}
+        </span>
+        <span className="pt-pill success" style={{ fontSize: '13px' }}>
+          <i className="bi bi-check-circle-fill"></i> {successCount} étape(s) réussie(s)
+        </span>
+        <span className="pt-pill danger" style={{ fontSize: '13px' }}>
+          <i className="bi bi-x-circle-fill"></i> {errorCount} étape(s) échouée(s)
+        </span>
+      </div>
+
       <div className="d-flex align-items-center gap-2 mb-2" style={{ fontSize: '11.5px', fontWeight: 700, letterSpacing: '0.06em', color: 'var(--pt-text-muted)' }}>
         <i className="bi bi-speedometer2" style={{ color: 'var(--pt-primary)' }}></i> PERFORMANCE
       </div>
@@ -595,7 +609,12 @@ function ExecutionDetail() {
                           </td>
                           <td className={r.status === 'error' ? 'fw-bold text-danger' : 'fw-bold'}>{r.responseTimeMs} ms</td>
                           <td><span className="badge bg-light text-dark border">{r.httpStatus}</span></td>
-                          <td><span className={`pt-pill ${r.status === 'success' ? 'success' : 'danger'}`}>{r.status === 'success' ? 'Réussie' : 'Échec'}</span></td>
+                          <td>
+                            <span className={`pt-pill ${r.status === 'success' ? 'success' : 'danger'}`}>
+                              <i className={`bi ${r.status === 'success' ? 'bi-check-circle-fill' : 'bi-x-circle-fill'} me-1`}></i>
+                              {r.status === 'success' ? 'Réussi' : 'Échec'}
+                            </span>
+                          </td>
                           <td>
                             {r.request?.body && (
                               <details>

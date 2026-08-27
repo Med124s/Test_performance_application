@@ -34,6 +34,10 @@ function Scenarios() {
     useApiList<Scenario>(() => scenariosApi.getAll())
   const { data: applications } = useApiList<Application>(() => applicationsApi.getAll())
   const { data: executions, refetch: refetchExecutions } = useApiList<Execution>(() => executionsApi.getAll())
+  // Étapes de TOUS les scénarios (pas juste celui ouvert dans la modale
+  // détail) — sert à afficher un aperçu des étapes directement dans la
+  // liste, sous le nom du scénario.
+  const { data: allSteps } = useApiList<Step>(() => stepsApi.getAll())
 
   // Flux de lancement (modale + progression réelle) partagé avec la page
   // Exécutions — voir hooks/useScenarioLauncher. On reste ici sur la page
@@ -58,6 +62,19 @@ function Scenarios() {
     applications.forEach((a) => map.set(a.id, a))
     return map
   }, [applications])
+
+  // Étapes de chaque scénario, triées dans l'ordre réel d'exécution — pour
+  // l'aperçu affiché sous le nom du scénario dans la liste.
+  const stepsByScenario = useMemo(() => {
+    const map = new Map<string, Step[]>()
+    for (const step of allSteps) {
+      const list = map.get(step.scenarioId) ?? []
+      list.push(step)
+      map.set(step.scenarioId, list)
+    }
+    map.forEach((list) => list.sort((a, b) => a.order - b.order))
+    return map
+  }, [allSteps])
 
   // Dernière exécution réelle par scénario, calculée à partir de la vraie
   // liste d'exécutions de JSON Server.
@@ -473,6 +490,11 @@ function Scenarios() {
                   const app = appById.get(scenario.applicationId)
                   const icon = app ? scenarioIcons[app.type] ?? 'bi-collection-play' : 'bi-collection-play'
                   const latestExec = latestExecByScenario.get(scenario.id)
+                  const scenarioSteps = stepsByScenario.get(scenario.id) ?? []
+                  const stepsPreview =
+                    scenarioSteps.length === 0
+                      ? 'Aucune étape'
+                      : scenarioSteps.map((s) => `${s.order}. ${s.method} ${s.url}`).join('  →  ')
 
                   return (
                     <tr key={scenario.id} style={{ background: isSelected ? 'var(--pt-sidebar-item-hover)' : undefined, cursor: 'pointer' }}>
@@ -488,8 +510,20 @@ function Scenarios() {
                             <span style={{ fontSize: '13.5px', fontWeight: 600, color: 'var(--pt-primary)', textDecoration: 'none', cursor: 'pointer' }}>
                               {scenario.name}
                             </span>
-                            <div style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)', marginTop: '1px' }}>
-                              ID: #SCN-{scenario.id}
+                            <div
+                              title={stepsPreview}
+                              style={{
+                                fontSize: '11.5px',
+                                color: 'var(--pt-text-muted)',
+                                marginTop: '1px',
+                                maxWidth: '320px',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap',
+                                fontFamily: scenarioSteps.length > 0 ? 'monospace' : undefined,
+                              }}
+                            >
+                              {stepsPreview}
                             </div>
                           </div>
                         </div>

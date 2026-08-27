@@ -95,7 +95,7 @@ export interface Step {
   scenarioId: EntityId
   order: number
   name: string
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'TRACE'
   url: string
   description?: string
   headers?: StepHeader[]

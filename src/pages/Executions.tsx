@@ -2,10 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import TopBar from '../components/TopBar'
 import LaunchScenarioModal from '../components/LaunchScenarioModal'
-import { Application, Execution, Scenario } from '../types'
+import { Application, Execution, Scenario, Step, StepRunStatus } from '../types'
 import { applicationsApi } from '../services/api/applications'
 import { scenariosApi } from '../services/api/scenarios'
 import { executionsApi } from '../services/api/executions'
+import { stepsApi } from '../services/api/steps'
 import { useApiList } from '../hooks/useApiResource'
 import { usePagination } from '../hooks/usePagination'
 import Pagination from '../components/Pagination'
@@ -22,9 +23,33 @@ function Executions() {
     useApiList<Execution>(() => executionsApi.getAll())
   const { data: scenarios } = useApiList<Scenario>(() => scenariosApi.getAll())
   const { data: applications } = useApiList<Application>(() => applicationsApi.getAll())
+  // Étapes de TOUS les scénarios — sert à afficher, sous le nom du
+  // scénario, le détail réel de chaque étape exécutée (méthode/URL +
+  // statut) sans devoir ouvrir le détail complet de l'exécution.
+  const { data: allSteps } = useApiList<Step>(() => stepsApi.getAll())
 
   const scenarioById = useMemo(() => new Map(scenarios.map((s) => [s.id, s])), [scenarios])
   const appById = useMemo(() => new Map(applications.map((a) => [a.id, a])), [applications])
+  const stepById = useMemo(() => new Map(allSteps.map((s) => [s.id, s])), [allSteps])
+
+  const stepStatusLabel = (status: StepRunStatus): string => {
+    switch (status) {
+      case 'success': return 'Réussi'
+      case 'error': return 'Échoué'
+      case 'skipped': return 'Ignorée'
+      case 'running': return 'En cours'
+      default: return 'En attente'
+    }
+  }
+  const stepStatusColor = (status: StepRunStatus): string => {
+    switch (status) {
+      case 'success': return 'var(--pt-success)'
+      case 'error': return 'var(--pt-danger)'
+      case 'skipped': return 'var(--pt-text-muted)'
+      case 'running': return 'var(--pt-info)'
+      default: return 'var(--pt-warning)'
+    }
+  }
 
   const [activeTab, setActiveTab] = useState<'all' | 'running' | 'success' | 'warning' | 'failed'>('all')
   const [searchQuery, setSearchQuery] = useState('')
@@ -167,7 +192,7 @@ function Executions() {
           <table className="pt-table">
             <thead>
               <tr>
-                <th>ID</th>
+                <th>#</th>
                 <th>Scénario</th>
                 <th>Application</th>
                 <th>Statut</th>
@@ -192,6 +217,40 @@ function Executions() {
                     >
                       {scenarioName}
                     </button>
+                    {exec.stepResults.length === 0 ? (
+                      <div style={{ fontSize: '11px', color: 'var(--pt-text-muted)', marginTop: '2px' }}>Aucune étape exécutée</div>
+                    ) : (
+                      <div
+                        title={exec.stepResults
+                          .map((r, i) => {
+                            const step = stepById.get(r.stepId)
+                            const label = step ? `${step.method} ${step.url}` : String(r.stepId)
+                            return `${i + 1}. ${label} — ${stepStatusLabel(r.status)}`
+                          })
+                          .join('  →  ')}
+                        style={{
+                          fontSize: '11px',
+                          fontFamily: 'monospace',
+                          marginTop: '2px',
+                          maxWidth: '320px',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {exec.stepResults.map((r, i) => {
+                          const step = stepById.get(r.stepId)
+                          const label = step ? `${step.method} ${step.url}` : String(r.stepId)
+                          return (
+                            <span key={i}>
+                              {i > 0 && <span style={{ color: 'var(--pt-text-muted)' }}>{'  →  '}</span>}
+                              <span style={{ color: 'var(--pt-text-muted)' }}>{i + 1}. {label}</span>{' '}
+                              <span style={{ color: stepStatusColor(r.status), fontWeight: 600 }}>({stepStatusLabel(r.status)})</span>
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
                   </td>
                   <td>
                     <button

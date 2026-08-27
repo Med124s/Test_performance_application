@@ -14,8 +14,24 @@
 
 import { Step, StepAssertion, StepResult, StepRunStatus } from '../types'
 
-export const sleep = (ms: number): Promise<void> =>
-  ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve()
+/** Pause réelle de `ms` millisecondes — interrompue immédiatement si
+ * `signal` s'annule pendant l'attente (au lieu d'attendre la fin du délai),
+ * pour qu'"Annuler" une exécution en cours n'ait jamais à attendre un Think
+ * Time/Pacing/ramp-up déjà en vol. */
+export const sleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve()
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true }
+    )
+  })
+}
 
 /** Résout l'URL réelle d'une étape : absolue telle quelle, ou relative à
  * l'URL de base de l'application testée. */
@@ -220,7 +236,8 @@ export async function runStep(
   resolvedStep.headers?.forEach((h) => {
     if (h.enabled && h.key) headers[h.key] = h.value
   })
-  const hasBody = resolvedStep.method !== 'GET' && resolvedStep.method !== 'DELETE' && !!resolvedStep.bodyJson
+  const methodsWithoutBody = ['GET', 'DELETE', 'HEAD', 'TRACE']
+  const hasBody = !methodsWithoutBody.includes(resolvedStep.method) && !!resolvedStep.bodyJson
   if (hasBody && !Object.keys(headers).some((k) => k.toLowerCase() === 'content-type')) {
     headers['Content-Type'] = 'application/json'
   }
@@ -228,7 +245,13 @@ export async function runStep(
   const request = { method: resolvedStep.method, url, body: hasBody ? resolvedStep.bodyJson : undefined }
 
   const thinkTimeMs = resolvedStep.pauseBeforeMs ?? thinkTimeOverrideMs ?? 0
-  if (thinkTimeMs > 0) await sleep(thinkTimeMs)
+  if (thinkTimeMs > 0) await sleep(thinkTimeMs, externalSignal)
+  // Annulé pendant le Think Time : ne pas envoyer la requête du tout (sinon
+  // le seul effet du fix ci-dessus serait de passer plus vite à un fetch()
+  // qu'on aurait de toute façon dû éviter).
+  if (externalSignal?.aborted) {
+    return { stepId: step.id, status: 'skipped', vu }
+  }
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -274,7 +297,7 @@ export async function runStep(
     console.log(`[stepRunner] ${resolvedStep.method} ${url} → ${response.status}${vu !== undefined ? ` (VU ${vu + 1})` : ''}`)
 
     const pacingMs = resolvedStep.pacingAfterMs ?? 0
-    if (pacingMs > 0) await sleep(pacingMs)
+    if (pacingMs > 0) await sleep(pacingMs, externalSignal)
 
     return {
       stepId: step.id,

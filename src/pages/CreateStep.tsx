@@ -46,7 +46,7 @@ function CreateStep() {
   const linkedApplication = applications.find((a) => a.name === linkedScenarioMeta?.application)
 
   // Form states (Left column)
-  const [method, setMethod] = useState<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'>('POST')
+  const [method, setMethod] = useState<'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'TRACE'>('POST')
   const [stepName, setStepName] = useState('Login utilisateur')
   const [url, setUrl] = useState('/auth/login')
   const [description, setDescription] = useState(
@@ -580,6 +580,25 @@ function CreateStep() {
       // la liste des scénarios (voir résumé, section "Que voulez-vous faire").
       setSavedScenario(saved)
       showNotification('Scénario enregistré avec succès !', 'success')
+
+      // "Immédiate" ("Lancer le scénario dès l'enregistrement", voir l'écran
+      // Planification) : on lance réellement le scénario ici, tout de suite
+      // après l'enregistrement — sans attendre un clic manuel sur
+      // "Exécuter". Même mécanisme (formOverride) que le déclencheur
+      // planifié de useScheduledExecutions, en arrière-plan (pas de modale).
+      if (executionType === 'immediate') {
+        const defaults = loadDefaultTestSettings()
+        launcher.handleLaunch(saved, {
+          scenarioId: saved.id,
+          applicationId: saved.applicationId,
+          virtualUsers: saved.virtualUsers ?? defaults.concurrency,
+          duration: 300,
+          rampUp: saved.rampUpSeconds ?? defaults.rampUpSeconds,
+          thinkTime: defaults.stepDelayMs,
+          debit: '',
+          stopMode: 'auto',
+        })
+      }
     } else {
       showNotification('Scénario complet enregistré avec succès !', 'success')
       setTimeout(() => {
@@ -925,6 +944,9 @@ function CreateStep() {
                   <option value="PUT">PUT - Mise à jour complète</option>
                   <option value="PATCH">PATCH - Modification partielle</option>
                   <option value="DELETE">DELETE - Suppression</option>
+                  <option value="HEAD">HEAD - En-têtes seulement</option>
+                  <option value="OPTIONS">OPTIONS - Options disponibles</option>
+                  <option value="TRACE">TRACE - Diagnostic de la requête</option>
                 </select>
               </div>
 

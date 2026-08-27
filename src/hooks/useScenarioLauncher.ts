@@ -312,7 +312,7 @@ export function useScenarioLauncher(onExecuted?: () => void | Promise<void>) {
           Array.from({ length: vuCount }, (_, vu) => {
             const baseIndex = vu * scenarioSteps.length
             return (async () => {
-              if (vu > 0) await sleep(vu * staggerMs)
+              if (vu > 0) await sleep(vu * staggerMs, abortController.signal)
               allResultsByVu[vu] = await runVirtualUser(
                 vu,
                 scenarioSteps,

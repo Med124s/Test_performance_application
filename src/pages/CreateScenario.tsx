@@ -18,7 +18,7 @@ const makeTempStepId = () => `tmp-${Date.now()}-${tempIdCounter++}`
 interface ScenarioStep {
   id: string
   order: number
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'TRACE'
   name: string
   url: string
   timeout: string
@@ -310,7 +310,7 @@ function CreateScenario() {
   // re-render qui masquerait normalement le bouton.
   const [savingStep, setSavingStep] = useState(false)
   const [editingStepId, setEditingStepId] = useState<string | null>(null)
-  const [stepFormMethod, setStepFormMethod] = useState<'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'>('GET')
+  const [stepFormMethod, setStepFormMethod] = useState<ScenarioStep['method']>('GET')
   const [stepFormName, setStepFormName] = useState('')
   const [stepFormUrl, setStepFormUrl] = useState('')
   const [stepFormTimeout, setStepFormTimeout] = useState('Status 200')
@@ -684,17 +684,15 @@ function CreateScenario() {
       }
       const updatedSteps = [...steps, newStep]
       setSteps(updatedSteps)
-      // On persiste tout de suite (sans attendre le prochain rendu) pour que
-      // la page de configuration détaillée retrouve bien cette étape.
       stepBridge.saveSteps(updatedSteps)
+      showNotification('Étape ajoutée avec succès')
       setShowStepModal(false)
 
-      // On enchaîne directement vers la configuration détaillée de la
-      // nouvelle étape (headers, body, assertions...) : les deux écrans
-      // sont ainsi reliés au lieu d'être deux flux indépendants.
-      stepBridge.setEditingStepId(nextId, true)
-      navigate('/scenarios/create-step')
-      return
+      // Reste sur cette page : la nouvelle étape doit apparaître tout de
+      // suite dans le tableau, sous le nom du scénario (voir "Étapes du
+      // scénario" plus bas). La configuration détaillée (headers, body,
+      // assertions...) reste accessible à tout moment via l'icône
+      // "Configurer les détails" de la ligne, sans redirection forcée.
     }
   }
 
@@ -928,7 +926,11 @@ function CreateScenario() {
                       <option value="GET">GET</option>
                       <option value="POST">POST</option>
                       <option value="PUT">PUT</option>
+                      <option value="PATCH">PATCH</option>
                       <option value="DELETE">DELETE</option>
+                      <option value="HEAD">HEAD</option>
+                      <option value="OPTIONS">OPTIONS</option>
+                      <option value="TRACE">TRACE</option>
                     </select>
                   </div>
 
@@ -1130,6 +1132,8 @@ function CreateScenario() {
             <select
               className="pt-form-control"
               value={applicationId}
+              disabled={!!applicationId}
+              title={applicationId ? "L'application d'un scénario ne peut plus être changée une fois sélectionnée." : undefined}
               onChange={(e) => {
                 setApplicationId(e.target.value)
                 const app = applications.find((a) => String(a.id) === e.target.value)
@@ -1140,6 +1144,12 @@ function CreateScenario() {
                 <option key={a.id} value={a.id}>{a.name}</option>
               ))}
             </select>
+            {applicationId && (
+              <div style={{ fontSize: '11.5px', color: 'var(--pt-text-muted)', marginTop: '4px' }}>
+                <i className="bi bi-lock-fill me-1"></i>
+                L'application n'est plus modifiable après sélection.
+              </div>
+            )}
           </div>
 
           <div className="col-12">
@@ -1206,13 +1216,14 @@ function CreateScenario() {
                 <th>Nom</th>
                 <th>URL / Ressource</th>
                 <th>Attente</th>
+                <th style={{ width: '100px' }}>Statut</th>
                 <th style={{ textAlign: 'right', width: '220px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {steps.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-4 text-muted">
+                  <td colSpan={8} className="text-center py-4 text-muted">
                     Aucune étape dans ce scénario. Cliquez sur "+ Ajouter une étape" pour commencer.
                   </td>
                 </tr>
@@ -1293,6 +1304,11 @@ function CreateScenario() {
                       <td>
                         <span style={{ fontSize: '12.5px', color: 'var(--pt-text-muted)' }}>
                           {step.timeout}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`pt-pill ${step.status === 'Actif' ? 'success' : 'neutral'}`} style={{ fontSize: '11px' }}>
+                          {step.status}
                         </span>
                       </td>
                       <td>

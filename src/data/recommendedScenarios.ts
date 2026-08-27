@@ -11,7 +11,7 @@
 
 export interface RecommendedStepDef {
   name: string
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS' | 'TRACE'
   url: string
   headers?: { key: string; value: string }[]
   bodyJson?: string
@@ -113,6 +113,47 @@ export const recommendedScenariosByApp: Record<string, RecommendedScenarioDef[]>
           bodyJson: JSON.stringify({ account: 'ACC001', amount: 1000 }, null, 2),
         },
       ],
+    },
+    {
+      name: 'Modification complète transfert',
+      description: "Met à jour intégralement un transfert existant (national ou international).",
+      steps: [
+        LOGIN_STEP,
+        {
+          name: 'Modifier le transfert',
+          method: 'PUT',
+          url: '/api/transfers/TRF001',
+          headers: AUTH_HEADER,
+          bodyJson: JSON.stringify({ destinationAccount: 'ACC002', amount: 750, currency: 'EUR' }, null, 2),
+        },
+      ],
+    },
+    {
+      name: 'Modification partielle transfert',
+      description: "Met à jour un ou plusieurs champs d'un transfert existant.",
+      steps: [
+        LOGIN_STEP,
+        {
+          name: 'Modifier partiellement le transfert',
+          method: 'PATCH',
+          url: '/api/transfers/TRF001',
+          headers: AUTH_HEADER,
+          bodyJson: JSON.stringify({ amount: 800 }, null, 2),
+        },
+      ],
+    },
+    {
+      name: 'Suppression transfert',
+      description: 'Supprime un transfert existant.',
+      steps: [
+        LOGIN_STEP,
+        { name: 'Supprimer le transfert', method: 'DELETE', url: '/api/transfers/TRF001', headers: AUTH_HEADER },
+      ],
+    },
+    {
+      name: 'Réinitialisation des données de test',
+      description: "Réinitialise les données de test de l'environnement bancaire.",
+      steps: [{ name: 'Réinitialiser les données', method: 'POST', url: '/api/reset' }],
     },
   ],
 }
